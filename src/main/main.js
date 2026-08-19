@@ -209,11 +209,24 @@ function registerIpc() {
       const game = [...gbaWindows.entries()].find(([, win]) => win.webContents.id === event.sender.id)?.[0];
       const entry = game ? library.get(game) : null;
       if (!entry || !fs.existsSync(entry.path)) throw new Error('ROM não encontrada.');
-      return await require('node:fs/promises').readFile(entry.path);
+      const savePath = `${entry.path}.sav`;
+      let save = null;
+      try { save = await require('node:fs/promises').readFile(savePath); } catch {}
+      return { rom: await require('node:fs/promises').readFile(entry.path), save };
     } catch (error) {
       console.error(error);
       return null;
     }
+  });
+
+  ipcMain.handle('game:save', async (event, bytes) => {
+    try {
+      const game = [...gbaWindows.entries()].find(([, win]) => win.webContents.id === event.sender.id)?.[0];
+      const entry = game ? library.get(game) : null;
+      if (!entry || !bytes) return { ok: false };
+      await require('node:fs/promises').writeFile(`${entry.path}.sav`, Buffer.from(bytes));
+      return { ok: true };
+    } catch (error) { return replyError(error); }
   });
 }
 

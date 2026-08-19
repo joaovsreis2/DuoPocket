@@ -22,7 +22,7 @@
         return (bytes[offset] | bytes[offset + 1] << 8) & 65535;
       }
       var GbaMemory = class {
-        constructor(rom) {
+        constructor(rom, save) {
           this.rom = Uint8Array.from(rom || []);
           this.ewram = new Uint8Array(262144);
           this.iwram = new Uint8Array(32768);
@@ -30,6 +30,11 @@
           this.palette = new Uint8Array(1024);
           this.vram = new Uint8Array(98304);
           this.oam = new Uint8Array(1024);
+          this.sram = new Uint8Array(65536);
+          if (save) this.sram.set(Uint8Array.from(save).subarray(0, this.sram.length));
+          this.scanlineCycles = 0;
+          this.scanline = 0;
+          this.timerRemainder = [0, 0, 0, 0];
           this.io[0] = 3;
           this.io[48] = 255;
           this.io[49] = 3;
@@ -42,6 +47,7 @@
           if (a >= REGION.PAL && a < REGION.PAL + 1024) return [this.palette, a - REGION.PAL];
           if (a >= REGION.VRAM && a < REGION.VRAM + 98304) return [this.vram, a - REGION.VRAM];
           if (a >= REGION.OAM && a < REGION.OAM + 1024) return [this.oam, a - REGION.OAM];
+          if (a >= 234881024 && a < 234946560) return [this.sram, a - 234881024];
           return null;
         }
         read8(address) {
@@ -68,6 +74,7 @@
           const a = address & ~1;
           this.write8(a, value);
           this.write8(a + 1, value >>> 8);
+          if (a >= 67109050 && a <= 67109084 && (a - 67109040) % 12 === 10) this.performDma(Math.floor((a - 67109040) / 12));
         }
         write32(address, value) {
           const a = address & ~3;
@@ -76,10 +83,65 @@
           this.write8(a + 2, value >>> 16);
           this.write8(a + 3, value >>> 24);
         }
+        tick(cycles) {
+          this.scanlineCycles += cycles;
+          while (this.scanlineCycles >= 1232) {
+            this.scanlineCycles -= 1232;
+            this.scanline = (this.scanline + 1) % 228;
+            this.io[6] = this.scanline;
+            const displayStatus = this.read16(67108868) & ~3;
+            const vblank = this.scanline >= 160;
+            const hblank = 0;
+            this.writeIo16(67108868, displayStatus | (vblank ? 1 : 0) | hblank);
+          }
+          for (let index = 0; index < 4; index++) {
+            const base = 256 + index * 4;
+            const control = this.read16(67109122 + index * 4);
+            if (!(control & 128)) continue;
+            const divider = [1, 64, 256, 1024][control >>> 0 & 3];
+            const ticks = Math.floor((this.timerRemainder[index] + cycles) / divider);
+            this.timerRemainder[index] = (this.timerRemainder[index] + cycles) % divider;
+            if (!ticks) continue;
+            const value = this.read16(67108864 + base);
+            const next = value + ticks;
+            if (next > 65535) this.writeIo16(67108864 + base, 0);
+            else this.writeIo16(67108864 + base, next);
+          }
+        }
+        writeIo16(address, value) {
+          const offset = address - REGION.IO & 1022;
+          this.io[offset] = value & 255;
+          this.io[offset + 1] = value >>> 8 & 255;
+        }
+        performDma(channel) {
+          if (channel < 0 || channel > 3) return;
+          const base = 67109040 + channel * 12;
+          const source = this.read32(base);
+          const destination = this.read32(base + 4);
+          const control = this.read16(base + 10);
+          if (!(control & 32768) || (control >>> 12 & 3) !== 0) return;
+          const max = channel === 3 ? 65536 : 16384;
+          const count = this.read16(base + 8) || max;
+          const width = control & 1024 ? 4 : 2;
+          const sourceMode = control >>> 7 & 3;
+          const destinationMode = control >>> 5 & 3;
+          let src = source;
+          let dst = destination;
+          for (let i = 0; i < count; i++) {
+            if (width === 4) this.write32(dst, this.read32(src));
+            else this.write16(dst, this.read16(src));
+            if (sourceMode !== 2) src = src + (sourceMode === 1 ? -width : width) >>> 0;
+            if (destinationMode !== 2) dst = dst + (destinationMode === 1 ? -width : width) >>> 0;
+          }
+          if (!(control & 512)) this.writeIo16(base + 10, control & 32767);
+        }
         setButtons(mask) {
           const activeLow = ~mask & 1023;
           this.io[304] = activeLow & 255;
           this.io[305] = activeLow >>> 8;
+        }
+        getSave() {
+          return Uint8Array.from(this.sram);
         }
         readPalette(index) {
           return little16(this.palette, (index & 511) * 2);
@@ -192,7 +254,12 @@
           return { value: U32(value >>> rotate | value << 32 - rotate), carry: value >>> rotate - 1 & 1 };
         }
         armOperand(instr) {
-          if (instr & 33554432) return { value: instr & 4095, carry: this.c };
+          if (instr & 33554432) {
+            const imm = instr & 255;
+            const rotate = (instr >>> 8 & 15) * 2;
+            const value2 = rotate ? U32(imm >>> rotate | imm << 32 - rotate) : imm;
+            return { value: value2, carry: rotate ? value2 >>> 31 : this.c };
+          }
           const rm = instr & 15;
           const value = rm === 15 ? U32(this.r[rm] + 4) : this.r[rm];
           const type = instr >>> 5 & 3;
@@ -204,7 +271,9 @@
           const pc = this.r[15] >>> 0;
           const instr = this.memory.read32(pc);
           this.r[15] = U32(pc + 4);
+          const before = this.cycles;
           this.stepArmInstruction(instr >>> 0);
+          this.memory.tick(this.cycles - before);
           return this.cycles;
         }
         stepArmInstruction(instr) {
@@ -249,7 +318,7 @@
             return;
           }
           if ((instr & 251658240) === 251658240) {
-            this.cycles += 4;
+            this.handleSwi(instr & 255);
             return;
           }
           if ((instr & 201326592) === 0) {
@@ -257,6 +326,64 @@
             return;
           }
           this.cycles += 1;
+        }
+        handleSwi(code) {
+          switch (code) {
+            case 6: {
+              const numerator = S32(this.r[0]);
+              const denominator = S32(this.r[1]);
+              if (denominator) {
+                const quotient = numerator / denominator | 0;
+                this.r[0] = U32(quotient);
+                this.r[1] = U32(numerator - quotient * denominator);
+                this.r[3] = U32(Math.abs(quotient));
+              }
+              this.cycles += 4;
+              return;
+            }
+            case 8: {
+              this.r[0] = Math.floor(Math.sqrt(this.r[0] >>> 0)) >>> 0;
+              this.cycles += 4;
+              return;
+            }
+            case 9: {
+              const x = S32(this.r[0]);
+              const y = S32(this.r[1]);
+              this.r[0] = Math.round(Math.atan2(y, x) * 32768 / Math.PI) & 65535;
+              this.cycles += 4;
+              return;
+            }
+            case 11:
+            // CpuSet
+            case 12: {
+              const source = this.r[0] >>> 0;
+              const destination = this.r[1] >>> 0;
+              const count = this.r[2] & 2097151;
+              const words = code === 12 ? (count & 2097151) * 8 : count & 2097151;
+              const fill = (this.r[2] & 16777216) !== 0;
+              const word = this.memory.read32(source);
+              for (let i = 0; i < words; i++) this.memory.write32(destination + i * 4, fill ? word : this.memory.read32(source + i * 4));
+              this.cycles += words;
+              return;
+            }
+            case 14:
+            // BgAffineSet / no-op fallback
+            case 5:
+            // VBlankIntrWait
+            case 4:
+            // IntrWait
+            case 1:
+            // RegisterRamReset
+            case 2:
+            // Halt
+            case 3:
+            // Stop
+            case 0:
+            // SoftReset
+            default:
+              this.cycles += 4;
+              return;
+          }
         }
         armLoadStore(instr) {
           const i = instr >>> 25 & 1;
@@ -390,7 +517,9 @@
           const pc = this.r[15] >>> 0;
           const instr = this.memory.read16(pc);
           this.r[15] = U32(pc + 2);
+          const before = this.cycles;
           this.stepThumbInstruction(instr);
+          this.memory.tick(this.cycles - before);
           return this.cycles;
         }
         stepThumbInstruction(instr) {
@@ -614,35 +743,83 @@
           return this.frame;
         }
         renderMode0() {
-          const control = this.memory.read16(67108872);
-          const charBase = (control >>> 2 & 3) * 16384;
-          const mapBase = (control >>> 8 & 31) * 2048;
-          const color8 = Boolean(control & 128);
-          const hFlip = Boolean(control & 16384);
-          const vFlip = Boolean(control & 32768);
-          const scrollX = this.memory.read16(67108880);
-          const scrollY = this.memory.read16(67108882);
+          const bg = [];
+          for (let n = 0; n < 4; n++) bg.push(this.memory.read16(67108872 + n * 2));
           for (let y = 0; y < 160; y++) for (let x = 0; x < 240; x++) {
-            const worldX = x + scrollX & 255;
-            const worldY = y + scrollY & 255;
-            const tileX = worldX >>> 3;
-            const tileY = worldY >>> 3;
-            const entry = this.memory.read16(100663296 + mapBase + tileY * 32 * 2 + tileX * 2);
-            const tile = entry & 1023;
-            const fx = Boolean(entry & 16384) ^ hFlip;
-            const fy = Boolean(entry & 32768) ^ vFlip;
-            const px = fx ? 7 - (worldX & 7) : worldX & 7;
-            const py = fy ? 7 - (worldY & 7) : worldY & 7;
-            let index;
-            if (color8) index = this.memory.read8(100663296 + charBase + tile * 64 + py * 8 + px);
-            else {
-              const packed = this.memory.read8(100663296 + charBase + tile * 32 + py * 4 + (px >>> 1));
-              const nibble = px & 1 ? packed >>> 4 : packed & 15;
-              index = nibble + (entry >>> 12 & 15) * 16;
+            let best = 4;
+            let color = this.memory.readPalette(0);
+            for (let n = 0; n < 4; n++) {
+              const control = bg[n];
+              if (control & 128 && n > 1) continue;
+              const pixel = this.bgPixel(n, control, x, y);
+              if (!pixel || (control & 3) > best) continue;
+              best = control & 3;
+              color = pixel;
             }
-            this.frame[y * 240 + x] = this.color15(this.memory.readPalette(index));
+            const sprite = this.spritePixel(x, y, best);
+            if (sprite) color = sprite;
+            this.frame[y * 240 + x] = this.color15(color);
           }
           return this.frame;
+        }
+        bgPixel(index, control, x, y) {
+          const size = [256, 512, 512, 1024][control >>> 14 & 3];
+          const scrollX = this.memory.read16(67108880 + index * 4);
+          const scrollY = this.memory.read16(67108882 + index * 4);
+          const worldX = (x + scrollX) % size;
+          const worldY = (y + scrollY) % size;
+          const mapBase = (control >>> 8 & 31) * 2048;
+          const charBase = (control >>> 2 & 3) * 16384;
+          const color8 = Boolean(control & 128);
+          const mapWidth = size / 32;
+          const tileX = worldX >>> 3;
+          const tileY = worldY >>> 3;
+          const entry = this.memory.read16(100663296 + mapBase + (tileY * mapWidth + tileX) * 2);
+          const tile = entry & 1023;
+          const px = entry & 16384 ? 7 - (worldX & 7) : worldX & 7;
+          const py = entry & 32768 ? 7 - (worldY & 7) : worldY & 7;
+          let paletteIndex;
+          if (color8) {
+            paletteIndex = this.memory.read8(100663296 + charBase + tile * 64 + py * 8 + px);
+            if (!paletteIndex) return 0;
+          } else {
+            const packed = this.memory.read8(100663296 + charBase + tile * 32 + py * 4 + (px >>> 1));
+            const nibble = px & 1 ? packed >>> 4 : packed & 15;
+            if (!nibble) return 0;
+            paletteIndex = nibble + (entry >>> 12 & 15) * 16;
+          }
+          return this.memory.readPalette(paletteIndex);
+        }
+        spritePixel(x, y, bgPriority) {
+          const sizes = [[[8, 8], [16, 8], [8, 16]], [[16, 16], [32, 8], [8, 32]], [[32, 32], [32, 16], [16, 32]], [[64, 64], [64, 32], [32, 64]]];
+          for (let i = 127; i >= 0; i--) {
+            const base = 117440512 + i * 8;
+            const attr0 = this.memory.read16(base);
+            const attr1 = this.memory.read16(base + 2);
+            const attr2 = this.memory.read16(base + 4);
+            if (attr0 & 512 || (attr0 & 768) === 768) continue;
+            const shape = attr0 >>> 14 & 3;
+            const sizeIndex = attr1 >>> 14 & 3;
+            const dim = sizes[sizeIndex]?.[shape] || [8, 8];
+            const sx = attr1 & 511;
+            const sy = attr0 & 255;
+            let px = x - (sx >= 256 ? sx - 512 : sx);
+            let py = y - (sy >= 160 ? sy - 256 : sy);
+            if (px < 0 || py < 0 || px >= dim[0] || py >= dim[1]) continue;
+            if (attr1 & 4096) px = dim[0] - 1 - px;
+            if (attr1 & 8192) py = dim[1] - 1 - py;
+            const color8 = Boolean(attr0 & 8192);
+            const tile = attr2 & 1023;
+            const tileX = px >>> 3;
+            const tileY = py >>> 3;
+            const tilesWide = dim[0] >>> 3;
+            const tileNumber = tile + tileY * (color8 ? tilesWide * 2 : tilesWide) + tileX * (color8 ? 2 : 1);
+            const data = color8 ? this.memory.read8(100728832 + tileNumber * 32 + (py & 7) * 8 + (px & 7)) : this.memory.read8(100728832 + tileNumber * 32 + (py & 7) * 4 + ((px & 7) >>> 1));
+            const paletteIndex = color8 ? data : (data >>> (px & 1) * 4 & 15) + (attr2 >>> 12 & 15) * 16;
+            if (!paletteIndex) continue;
+            return this.memory.readPalette(512 + paletteIndex);
+          }
+          return 0;
         }
       };
       module.exports = { GbaPpu };
@@ -657,8 +834,8 @@
       var { Arm7tdmi } = require_cpu();
       var { GbaPpu } = require_ppu();
       var DuoGba2 = class {
-        constructor(rom) {
-          this.memory = new GbaMemory(rom);
+        constructor(rom, save) {
+          this.memory = new GbaMemory(rom, save);
           this.cpu = new Arm7tdmi(this.memory);
           this.ppu = new GbaPpu(this.memory);
           this.frameCycles = 280896;
@@ -679,6 +856,9 @@
           if (bit === void 0) return;
           const mask = this.memory.read16(67109168);
           this.memory.setButtons(down ? mask & ~(1 << bit) : mask | 1 << bit);
+        }
+        getSave() {
+          return this.memory.getSave();
         }
       };
       module.exports = { DuoGba: DuoGba2 };
@@ -735,14 +915,15 @@
   });
   document.querySelector("#reset").addEventListener("click", () => emulator.value?.reset());
   async function init() {
-    const rom = await window.duopocket.getRom();
-    if (!rom) {
+    const payload = await window.duopocket.getRom();
+    if (!payload) {
       document.querySelector("#status").textContent = "ROM indispon\xEDvel";
       return;
     }
-    emulator.value = new DuoGba(rom);
-    document.querySelector("#status").textContent = "ARM7TDMI \xB7 v\xEDdeo pr\xF3prio";
+    emulator.value = new DuoGba(payload.rom, payload.save);
+    document.querySelector("#status").textContent = "ARM7TDMI \xB7 v\xEDdeo pr\xF3prio \xB7 SRAM";
     loop();
+    setInterval(() => emulator.value && window.duopocket.saveRom(emulator.value.getSave()), 5e3);
   }
   init().catch((error) => {
     console.error(error);

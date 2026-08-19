@@ -13,5 +13,6 @@ contextBridge.exposeInMainWorld('duopocket', {
   reveal: (id) => ipcRenderer.invoke('library:reveal', id),
   launch: (id) => ipcRenderer.invoke('game:launch', id),
   openEmulator: (engine) => ipcRenderer.invoke('emulator:open', engine),
-  getRom: () => ipcRenderer.invoke('game:rom')
+  getRom: () => ipcRenderer.invoke('game:rom'),
+  saveRom: (bytes) => ipcRenderer.invoke('game:save', bytes)
 });

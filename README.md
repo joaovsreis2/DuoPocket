@@ -8,7 +8,7 @@ Boy, Game Boy Color, Game Boy Advance e Nintendo DS no Windows.
 - Biblioteca pesquisável com importação de arquivos ou pastas inteiras.
 - Detecção automática de título e sistema pelo cabeçalho da ROM.
 - Favoritos, recentes, contagem de sessões e reabertura da pasta do jogo.
-- DuoGBA próprio (alpha) para `.gba`, com CPU ARM7TDMI, barramento e vídeo básico.
+- DuoGBA próprio (alpha) para `.gba`, com CPU ARM7TDMI, BIOS local parcial, DMA/timers, SRAM `.sav`, múltiplos fundos e sprites.
 - melonDS 1.1 para `.nds`, incluindo tela de toque pelo mouse (núcleo próprio DS
   será a próxima etapa).
 - Atalhos, saves, save states e gamepads fornecidos pelos emuladores nativos.
@@ -16,12 +16,13 @@ Boy, Game Boy Color, Game Boy Advance e Nintendo DS no Windows.
 
 ### Estado do núcleo próprio
 
-O DuoGBA é uma implementação própria em JavaScript e já possui CPU ARM7TDMI
-(ARM/Thumb), barramento de memória, vídeo bitmap/tile básico e controles. A
-ROM ARM mínima de teste executa instruções e escreve no VRAM. Esta é uma fase
-alpha: compatibilidade completa com jogos comerciais, áudio, DMA, timers,
-interrupções e Game Boy/Game Boy Color ainda serão adicionados antes de chamar
-o núcleo de estável.
+O DuoGBA é uma implementação própria em JavaScript. Já possui CPU ARM7TDMI
+(ARM/Thumb), barramento, DMA imediato, timers, chamadas BIOS comuns, vídeo
+bitmap/tile com múltiplos fundos e sprites, controles e SRAM persistente. Esta
+é uma fase alpha: ainda faltam áudio, interrupções completas, modos gráficos
+avançados e a validação de compatibilidade jogo a jogo. Por isso o FireRed
+continua em desenvolvimento e não é anunciado como compatível até passar por
+testes reais.
 
 ## Uso
 
@@ -32,9 +33,9 @@ o núcleo de estável.
 3. Selecione um jogo e clique em **Jogar agora**.
 4. Configure controles, vídeo e áudio diretamente em **Ajustar emulador**.
 
-Os saves pertencem aos emuladores. Por padrão, o mGBA cria o save de bateria ao
-lado da ROM. O melonDS mantém suas configurações e saves conforme a configuração
-do próprio emulador. Não mova uma ROM e seu arquivo de save separadamente.
+O núcleo próprio grava SRAM em um arquivo `.sav` ao lado da ROM. O melonDS
+mantém suas configurações e saves conforme a configuração do próprio emulador.
+Não mova uma ROM e seu arquivo de save separadamente.
 
 ## Nintendo DS e BIOS
 

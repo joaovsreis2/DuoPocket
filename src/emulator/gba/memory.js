@@ -16,7 +16,7 @@ function little16(bytes, offset) {
 }
 
 class GbaMemory {
-  constructor(rom) {
+  constructor(rom, save) {
     this.rom = Uint8Array.from(rom || []);
     this.ewram = new Uint8Array(0x40000);
     this.iwram = new Uint8Array(0x8000);
@@ -25,6 +25,7 @@ class GbaMemory {
     this.vram = new Uint8Array(0x18000);
     this.oam = new Uint8Array(0x400);
     this.sram = new Uint8Array(0x10000);
+    if (save) this.sram.set(Uint8Array.from(save).subarray(0, this.sram.length));
     this.scanlineCycles = 0;
     this.scanline = 0;
     this.timerRemainder = [0, 0, 0, 0];
@@ -91,7 +92,7 @@ class GbaMemory {
       this.writeIo16(0x04000004, displayStatus | (vblank ? 1 : 0) | hblank);
     }
     for (let index = 0; index < 4; index++) {
-      const base = 0x100 + index * 4; const control = this.read16(0x04000002 + index * 4); if (!(control & 0x80)) continue;
+      const base = 0x100 + index * 4; const control = this.read16(0x04000102 + index * 4); if (!(control & 0x80)) continue;
       const divider = [1, 64, 256, 1024][(control >>> 0) & 3]; const ticks = Math.floor((this.timerRemainder[index] + cycles) / divider); this.timerRemainder[index] = (this.timerRemainder[index] + cycles) % divider;
       if (!ticks) continue;
       const value = this.read16(0x04000000 + base); const next = value + ticks;
@@ -123,6 +124,8 @@ class GbaMemory {
     this.io[0x130] = activeLow & 0xff;
     this.io[0x131] = activeLow >>> 8;
   }
+
+  getSave() { return Uint8Array.from(this.sram); }
 
   readPalette(index) {
     return little16(this.palette, (index & 0x1ff) * 2);

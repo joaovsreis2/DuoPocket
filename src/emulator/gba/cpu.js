@@ -79,7 +79,12 @@ class Arm7tdmi {
   }
 
   armOperand(instr) {
-    if (instr & 0x02000000) return { value: instr & 0xfff, carry: this.c };
+    if (instr & 0x02000000) {
+      const imm = instr & 0xff;
+      const rotate = ((instr >>> 8) & 0xf) * 2;
+      const value = rotate ? U32((imm >>> rotate) | (imm << (32 - rotate))) : imm;
+      return { value, carry: rotate ? (value >>> 31) : this.c };
+    }
     const rm = instr & 15;
     const value = rm === 15 ? U32(this.r[rm] + 4) : this.r[rm];
     const type = (instr >>> 5) & 3;
@@ -120,9 +125,41 @@ class Arm7tdmi {
       this.r[rd] = U32(this.r[rm] * this.r[rs]); if (instr & 0x00100000) this.setFlags(this.r[rd] >>> 31, this.r[rd] === 0);
       this.cycles += 2; return;
     }
-    if ((instr & 0x0f000000) === 0x0f000000) { this.cycles += 4; return; } // BIOS SWI: handled by stubs in this phase
+    if ((instr & 0x0f000000) === 0x0f000000) { this.handleSwi(instr & 0xff); return; }
     if ((instr & 0x0c000000) === 0) { this.armDataProcessing(instr); return; }
     this.cycles += 1;
+  }
+
+  handleSwi(code) {
+    // BIOS calls used by commercial games. These are deterministic local
+    // implementations; the real BIOS is intentionally not redistributed.
+    switch (code) {
+      case 0x06: { // Div
+        const numerator = S32(this.r[0]); const denominator = S32(this.r[1]);
+        if (denominator) { const quotient = (numerator / denominator) | 0; this.r[0] = U32(quotient); this.r[1] = U32(numerator - quotient * denominator); this.r[3] = U32(Math.abs(quotient)); }
+        this.cycles += 4; return;
+      }
+      case 0x08: { // Sqrt
+        this.r[0] = Math.floor(Math.sqrt(this.r[0] >>> 0)) >>> 0; this.cycles += 4; return;
+      }
+      case 0x09: { // ArcTan2 (fixed-point approximation)
+        const x = S32(this.r[0]); const y = S32(this.r[1]); this.r[0] = Math.round(Math.atan2(y, x) * 32768 / Math.PI) & 0xffff; this.cycles += 4; return;
+      }
+      case 0x0b: // CpuSet
+      case 0x0c: { // CpuFastSet
+        const source = this.r[0] >>> 0; const destination = this.r[1] >>> 0; const count = this.r[2] & 0x1fffff; const words = code === 0x0c ? (count & 0x1fffff) * 8 : (count & 0x1fffff); const fill = (this.r[2] & 0x01000000) !== 0; const word = this.memory.read32(source);
+        for (let i = 0; i < words; i++) this.memory.write32(destination + i * 4, fill ? word : this.memory.read32(source + i * 4));
+        this.cycles += words; return;
+      }
+      case 0x0e: // BgAffineSet / no-op fallback
+      case 0x05: // VBlankIntrWait
+      case 0x04: // IntrWait
+      case 0x01: // RegisterRamReset
+      case 0x02: // Halt
+      case 0x03: // Stop
+      case 0x00: // SoftReset
+      default: this.cycles += 4; return;
+    }
   }
 
   armLoadStore(instr) {
