@@ -1,0 +1,6 @@
+node_modules/
+dist/
+artifacts/
+assets/icons/*.png
+assets/icons/*.ico
+npm-debug.log*

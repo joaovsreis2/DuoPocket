@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DuoPocket</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <svg class="svg-defs" aria-hidden="true">
+      <symbol id="i-library" viewBox="0 0 24 24"><path d="M4 5.5h6v13H4zM14 5.5h6v13h-6zM7 9h.01M17 9h.01" /></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" /><path d="M12 8v4l3 2" /></symbol>
+      <symbol id="i-heart" viewBox="0 0 24 24"><path d="M20 8.5c0 5-8 10-8 10s-8-5-8-10A4.5 4.5 0 0 1 12 5.7 4.5 4.5 0 0 1 20 8.5Z" /></symbol>
+      <symbol id="i-gameboy" viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="18" rx="3" /><path d="M9 7h6v5H9zM9 16h3M10.5 14.5v3M15 15.5h.01" /></symbol>
+      <symbol id="i-ds" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="8" rx="2" /><rect x="5" y="13" width="14" height="8" rx="2" /><path d="M8 6h8M8 16h5M16 17h.01" /></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4 4" /></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m7 9 5 5 5-5" /></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="m9 6 9 6-9 6Z" /></symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5h7l2-2h8v13h-17z" /></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" /></symbol>
+      <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5" /></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></symbol>
+    </svg>
+
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Navegação da biblioteca">
+        <div class="brand">
+          <img src="../../assets/icons/app-icon.svg" alt="" />
+          <div><strong>DuoPocket</strong><span>arquivo portátil</span></div>
+        </div>
+
+        <nav class="filters" id="filters">
+          <button class="filter is-active" data-filter="all">
+            <svg><use href="#i-library" /></svg><span>Todos os jogos</span><b data-count="all">0</b>
+          </button>
+          <button class="filter" data-filter="recent">
+            <svg><use href="#i-clock" /></svg><span>Jogados recentemente</span><b data-count="recent">0</b>
+          </button>
+          <button class="filter" data-filter="favorites">
+            <svg><use href="#i-heart" /></svg><span>Favoritos</span><b data-count="favorites">0</b>
+          </button>
+
+          <p class="nav-label">Sistemas</p>
+          <button class="filter" data-filter="gameboy">
+            <svg><use href="#i-gameboy" /></svg><span>Game Boy</span><b data-count="gameboy">0</b>
+          </button>
+          <button class="filter" data-filter="nds">
+            <svg><use href="#i-ds" /></svg><span>Nintendo DS</span><b data-count="nds">0</b>
+          </button>
+        </nav>
+
+        <div class="engine-panel">
+          <div class="engine-heading"><span>Núcleos locais</span><span class="status-light" aria-hidden="true"></span></div>
+          <button data-engine="mgba"><span><b>DuoGBA próprio</b><small id="mgba-status">verificando</small></span><svg><use href="#i-settings" /></svg></button>
+          <button data-engine="melonds"><span><b>melonDS</b><small id="melonds-status">verificando</small></span><svg><use href="#i-settings" /></svg></button>
+        </div>
+
+        <p class="legal-note">Use apenas backups próprios.<br />Nenhum jogo é incluído.</p>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow" id="section-eyebrow">Biblioteca local</p>
+            <h1 id="section-title">Todos os jogos</h1>
+          </div>
+          <div class="topbar-actions">
+            <label class="search-box">
+              <svg><use href="#i-search" /></svg>
+              <span class="sr-only">Pesquisar jogos</span>
+              <input id="search" type="search" placeholder="Pesquisar jogos" autocomplete="off" />
+              <kbd>Ctrl F</kbd>
+            </label>
+            <div class="import-group">
+              <button class="primary-button" id="add-files"><svg><use href="#i-plus" /></svg>Adicionar jogos</button>
+              <details class="import-menu">
+                <summary aria-label="Mais opções de importação"><svg><use href="#i-chevron" /></svg></summary>
+                <div>
+                  <button id="add-folder"><svg><use href="#i-folder" /></svg><span><b>Importar uma pasta</b><small>Inclui subpastas compatíveis</small></span></button>
+                </div>
+              </details>
+            </div>
+          </div>
+        </header>
+
+        <section class="hero" id="hero" aria-live="polite"></section>
+
+        <section class="shelf" aria-labelledby="shelf-title">
+          <div class="shelf-heading">
+            <div><h2 id="shelf-title">Na estante</h2><span id="result-count">0 jogos</span></div>
+            <span class="shortcut-hint">Enter para jogar</span>
+          </div>
+          <div class="game-grid" id="game-grid"></div>
+        </section>
+      </main>
+    </div>
+
+    <div class="drop-zone" id="drop-zone" aria-hidden="true">
+      <div><svg><use href="#i-plus" /></svg><strong>Solte para adicionar</strong><span>GB, GBC, GBA ou NDS</span></div>
+    </div>
+
+    <dialog id="remove-dialog">
+      <form method="dialog">
+        <button class="dialog-close" value="cancel" aria-label="Fechar"><svg><use href="#i-x" /></svg></button>
+        <span class="dialog-mark"><svg><use href="#i-trash" /></svg></span>
+        <p class="eyebrow">Remover da estante</p>
+        <h2>Manter o arquivo do jogo?</h2>
+        <p>O DuoPocket removerá apenas o atalho da biblioteca. A ROM e os saves continuarão no computador.</p>
+        <div class="dialog-actions">
+          <button value="cancel" class="secondary-button">Cancelar</button>
+          <button value="confirm" class="danger-button">Remover atalho</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toast-region" id="toast-region" aria-live="polite"></div>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

@@ -1,0 +1,76 @@
+{
+  "name": "duopocket",
+  "version": "1.0.0",
+  "description": "Biblioteca local para jogos de Game Boy, Game Boy Color, Game Boy Advance e Nintendo DS.",
+  "main": "src/main/main.js",
+  "author": "TNT Fitness",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "npm run gba:bundle && electron .",
+    "gba:bundle": "esbuild src/renderer/gba-player.js --bundle --platform=browser --outfile=src/renderer/gba-bundle.js",
+    "icons": "node scripts/build-icons.js",
+    "test": "node --test tests/*.test.js",
+    "capture": "electron scripts/capture.js",
+    "capture:gba": "npm run gba:bundle && electron scripts/capture-gba.js",
+    "dist": "npm run test && npm run gba:bundle && npm run icons && electron-builder --win nsis zip"
+  },
+  "devDependencies": {
+    "electron": "43.4.1",
+    "electron-builder": "26.15.3",
+    "esbuild": "0.25.9",
+    "png-to-ico": "3.0.2",
+    "sharp": "0.35.3"
+  },
+  "build": {
+    "appId": "br.com.tntfitness.duopocket",
+    "productName": "DuoPocket",
+    "copyright": "Copyright © 2026 TNT Fitness",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "assets/icons/app.ico",
+      "assets/icons/app-256.png",
+      "package.json",
+      "README.md",
+      "THIRD_PARTY_NOTICES.md",
+      "LICENSE"
+    ],
+    "extraResources": [
+      {
+        "from": "vendor/emulators",
+        "to": "emulators",
+        "filter": ["melonDS/**/*"]
+      },
+      {
+        "from": "vendor/licenses",
+        "to": "licenses",
+        "filter": ["melonDS/**/*"]
+      }
+    ],
+    "win": {
+      "icon": "assets/icons/app.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "DuoPocket"
+    }
+  }
+}

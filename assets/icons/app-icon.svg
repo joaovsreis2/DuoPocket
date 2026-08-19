@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">DuoPocket</title>
+  <desc id="desc">Dois consoles portáteis unidos por uma dobradiça.</desc>
+  <rect width="512" height="512" rx="112" fill="#3452D1"/>
+  <path d="M0 286h512v114c0 62-50 112-112 112H112C50 512 0 462 0 400V286Z" fill="#FA685B"/>
+  <rect x="86" y="74" width="340" height="164" rx="54" fill="#F7F9FA"/>
+  <rect x="116" y="103" width="280" height="106" rx="26" fill="#171922"/>
+  <path d="M92 258h328" stroke="#171922" stroke-width="25" stroke-linecap="round"/>
+  <rect x="86" y="278" width="340" height="160" rx="54" fill="#F7F9FA"/>
+  <path d="M145 326v66M112 359h66" stroke="#171922" stroke-width="22" stroke-linecap="round"/>
+  <circle cx="348" cy="338" r="22" fill="#3452D1"/>
+  <circle cx="388" cy="378" r="22" fill="#FA685B"/>
+  <circle cx="256" cy="404" r="9" fill="#171922"/>
+  <path d="M178 129h66c38 0 60 19 60 49s-22 48-60 48h-66v-97Zm55 66c20 0 31-6 31-18s-11-18-31-18h-16v36h16Z" fill="#F7F9FA"/>
+</svg>
