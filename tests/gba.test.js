@@ -173,3 +173,25 @@ test('DMA inicia quando contagem e controle são escritos juntos em 32 bits', ()
   const memory = new GbaMemory(new Uint8Array(0x40)); memory.write32(0x02000000, 0x89abcdef); memory.write32(0x040000d4, 0x02000000); memory.write32(0x040000d8, 0x03000000); memory.write32(0x040000dc, 0x84000001);
   assert.equal(memory.read32(0x03000000), 0x89abcdef);
 });
+
+test('Flash 1M identifica, grava e troca bancos de 64 KiB', () => {
+  const memory = new GbaMemory(new Uint8Array());
+  const command = (value) => { memory.write8(0x0e005555, 0xaa); memory.write8(0x0e002aaa, 0x55); memory.write8(0x0e005555, value); };
+  command(0x90); assert.equal(memory.read8(0x0e000000), 0x62); assert.equal(memory.read8(0x0e000001), 0x13); memory.write8(0x0e000000, 0xf0);
+  command(0xa0); memory.write8(0x0e000123, 0x5a); assert.equal(memory.read8(0x0e000123), 0x5a);
+  command(0xb0); memory.write8(0x0e000000, 1); assert.equal(memory.read8(0x0e000123), 0xff);
+  command(0xa0); memory.write8(0x0e000123, 0xa5); assert.equal(memory.read8(0x0e000123), 0xa5);
+  command(0xb0); memory.write8(0x0e000000, 0); assert.equal(memory.read8(0x0e000123), 0x5a); assert.equal(memory.getSave().length, 0x20000);
+});
+
+test('timers recarregam, geram IRQ e operam em cascata', () => {
+  const memory = new GbaMemory(new Uint8Array());
+  memory.write16(0x04000100, 0xfffe); memory.write16(0x04000104, 0xffff);
+  memory.write16(0x04000106, 0x0084); memory.write16(0x04000102, 0x00c0);
+  memory.tick(2);
+  assert.equal(memory.read16(0x04000100), 0xfffe);
+  assert.equal(memory.read16(0x04000104), 0xffff);
+  assert.equal(memory.read16(0x04000202) & 0x0008, 0x0008);
+  memory.tick(2);
+  assert.equal(memory.read16(0x04000104), 0xffff);
+});

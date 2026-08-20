@@ -24,11 +24,13 @@ class GbaMemory {
     this.palette = new Uint8Array(0x400);
     this.vram = new Uint8Array(0x18000);
     this.oam = new Uint8Array(0x400);
-    this.sram = new Uint8Array(0x10000);
+    this.sram = new Uint8Array(0x20000); this.sram.fill(0xff);
+    this.flashBank = 0; this.flashState = 0; this.flashIdMode = false;
     if (save) this.sram.set(Uint8Array.from(save).subarray(0, this.sram.length));
     this.scanlineCycles = 0;
     this.scanline = 0;
     this.timerRemainder = [0, 0, 0, 0];
+    this.timerReload = [0, 0, 0, 0];
     this.io[0x00] = 0x00; // estado inicial do LCD; a ROM escolhe o modo gráfico
     this.io[0x30] = 0xff; this.io[0x31] = 0x03; // KEYINPUT: botões soltos
   }
@@ -54,7 +56,7 @@ class GbaMemory {
     if (a >= REGION.PAL && a < REGION.PAL + 0x400) return this.palette[a - REGION.PAL];
     if (a >= REGION.VRAM && a < REGION.VRAM + 0x18000) return this.vram[a - REGION.VRAM];
     if (a >= REGION.OAM && a < REGION.OAM + 0x400) return this.oam[a - REGION.OAM];
-    if (a >= 0x0e000000 && a < 0x0e010000) return this.sram[a - 0x0e000000];
+    if (a >= 0x0e000000 && a < 0x0e010000) { const offset = a - 0x0e000000; if (this.flashIdMode && offset < 2) return offset ? 0x13 : 0x62; return this.sram[this.flashBank * 0x10000 + offset]; }
     return 0;
   }
 
@@ -70,21 +72,49 @@ class GbaMemory {
 
   write8(address, value) {
     const a = address >>> 0;
-    if (a >= REGION.ROM) return;
     const byte = value & 0xff;
+    if (a >= 0x0e000000 && a < 0x0e010000) { this.writeFlash(a - 0x0e000000, byte); return; }
+    if (a >= REGION.ROM) return;
     if (a >= REGION.EWRAM && a < REGION.EWRAM + 0x40000) this.ewram[a - REGION.EWRAM] = byte;
     else if (a >= REGION.IWRAM && a < REGION.IWRAM + 0x8000) this.iwram[a - REGION.IWRAM] = byte;
     else if (a >= REGION.IO && a < REGION.IO + 0x400) this.io[a - REGION.IO] = byte;
     else if (a >= REGION.PAL && a < REGION.PAL + 0x400) this.palette[a - REGION.PAL] = byte;
     else if (a >= REGION.VRAM && a < REGION.VRAM + 0x18000) this.vram[a - REGION.VRAM] = byte;
     else if (a >= REGION.OAM && a < REGION.OAM + 0x400) this.oam[a - REGION.OAM] = byte;
-    else if (a >= 0x0e000000 && a < 0x0e010000) this.sram[a - 0x0e000000] = byte;
+  }
+
+  writeFlash(offset, value) {
+    if (value === 0xf0) { this.flashState = 0; this.flashIdMode = false; return; }
+    if (this.flashState === 3) { this.sram[this.flashBank * 0x10000 + offset] &= value; this.flashState = 0; return; }
+    if (this.flashState === 4) { if (offset === 0) this.flashBank = value & 1; this.flashState = 0; return; }
+    if (this.flashState === 5) { this.flashState = offset === 0x5555 && value === 0xaa ? 6 : 0; return; }
+    if (this.flashState === 6) { this.flashState = offset === 0x2aaa && value === 0x55 ? 7 : 0; return; }
+    if (this.flashState === 7) {
+      if (offset === 0x5555 && value === 0x10) this.sram.fill(0xff);
+      else if (value === 0x30) { const start = this.flashBank * 0x10000 + (offset & ~0xfff); this.sram.fill(0xff, start, start + 0x1000); }
+      this.flashState = 0; return;
+    }
+    if (this.flashState === 0) { if (offset === 0x5555 && value === 0xaa) this.flashState = 1; return; }
+    if (this.flashState === 1) { this.flashState = offset === 0x2aaa && value === 0x55 ? 2 : 0; return; }
+    if (this.flashState === 2) {
+      this.flashState = 0;
+      if (offset !== 0x5555) return;
+      if (value === 0x90) this.flashIdMode = true;
+      else if (value === 0xa0) this.flashState = 3;
+      else if (value === 0xb0) this.flashState = 4;
+      else if (value === 0x80) this.flashState = 5;
+    }
   }
 
   write16(address, value) {
     const a = address & ~1;
     if (a === 0x04000202) { this.writeIo16(a, this.read16(a) & ~(value & 0x3fff)); return; }
+    const timerData = a >= 0x04000100 && a <= 0x0400010c && ((a - 0x04000100) % 4) === 0;
+    const timerControl = a >= 0x04000102 && a <= 0x0400010e && ((a - 0x04000102) % 4) === 0;
+    const oldControl = timerControl ? this.read16(a) : 0;
     this.write8(a, value); this.write8(a + 1, value >>> 8);
+    if (timerData) this.timerReload[(a - 0x04000100) >> 2] = value & 0xffff;
+    if (timerControl && !(oldControl & 0x80) && (value & 0x80)) { const index = (a - 0x04000102) >> 2; this.writeIo16(a - 2, this.timerReload[index]); this.timerRemainder[index] = 0; }
     if (a >= 0x040000ba && a <= 0x040000dc && ((a - 0x040000b0) % 12) === 10) this.performDma(Math.floor((a - 0x040000b0) / 12));
   }
 
@@ -107,13 +137,17 @@ class GbaMemory {
       if (this.scanline === 160) for (let channel = 0; channel < 4; channel++) this.performDma(channel, 1);
       if (this.scanline === 160 && (displayStatus & 0x0008)) this.writeIo16(0x04000202, this.read16(0x04000202) | 0x0001);
     }
-    for (let index = 0; index < 4; index++) {
-      const base = 0x100 + index * 4; const control = this.read16(0x04000102 + index * 4); if (!(control & 0x80)) continue;
-      const divider = [1, 64, 256, 1024][(control >>> 0) & 3]; const ticks = Math.floor((this.timerRemainder[index] + cycles) / divider); this.timerRemainder[index] = (this.timerRemainder[index] + cycles) % divider;
-      if (!ticks) continue;
-      const value = this.read16(0x04000000 + base); const next = value + ticks;
-      if (next > 0xffff) this.writeIo16(0x04000000 + base, 0); else this.writeIo16(0x04000000 + base, next);
-    }
+    for (let index = 0; index < 4; index++) { const control = this.read16(0x04000102 + index * 4); if (!(control & 0x80) || (index && (control & 4))) continue; const divider = [1, 64, 256, 1024][control & 3]; const total = this.timerRemainder[index] + cycles; const ticks = Math.floor(total / divider); this.timerRemainder[index] = total % divider; if (ticks) this.incrementTimer(index, ticks); }
+  }
+
+  incrementTimer(index, ticks) {
+    if (index > 3 || ticks <= 0) return;
+    const address = 0x04000100 + index * 4; const control = this.read16(address + 2); if (!(control & 0x80)) return;
+    let value = this.read16(address); let overflows = 0;
+    while (ticks > 0) { const untilOverflow = 0x10000 - value; if (ticks < untilOverflow) { value += ticks; ticks = 0; } else { ticks -= untilOverflow; value = this.timerReload[index]; overflows++; } }
+    this.writeIo16(address, value);
+    if (overflows && (control & 0x40)) this.writeIo16(0x04000202, this.read16(0x04000202) | (1 << (3 + index)));
+    if (overflows && index < 3 && (this.read16(address + 6) & 0x84) === 0x84) this.incrementTimer(index + 1, overflows);
   }
 
   writeIo16(address, value) {

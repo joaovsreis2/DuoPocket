@@ -30,11 +30,16 @@
           this.palette = new Uint8Array(1024);
           this.vram = new Uint8Array(98304);
           this.oam = new Uint8Array(1024);
-          this.sram = new Uint8Array(65536);
+          this.sram = new Uint8Array(131072);
+          this.sram.fill(255);
+          this.flashBank = 0;
+          this.flashState = 0;
+          this.flashIdMode = false;
           if (save) this.sram.set(Uint8Array.from(save).subarray(0, this.sram.length));
           this.scanlineCycles = 0;
           this.scanline = 0;
           this.timerRemainder = [0, 0, 0, 0];
+          this.timerReload = [0, 0, 0, 0];
           this.io[0] = 0;
           this.io[48] = 255;
           this.io[49] = 3;
@@ -59,7 +64,11 @@
           if (a >= REGION.PAL && a < REGION.PAL + 1024) return this.palette[a - REGION.PAL];
           if (a >= REGION.VRAM && a < REGION.VRAM + 98304) return this.vram[a - REGION.VRAM];
           if (a >= REGION.OAM && a < REGION.OAM + 1024) return this.oam[a - REGION.OAM];
-          if (a >= 234881024 && a < 234946560) return this.sram[a - 234881024];
+          if (a >= 234881024 && a < 234946560) {
+            const offset = a - 234881024;
+            if (this.flashIdMode && offset < 2) return offset ? 19 : 98;
+            return this.sram[this.flashBank * 65536 + offset];
+          }
           return 0;
         }
         read16(address) {
@@ -72,15 +81,68 @@
         }
         write8(address, value) {
           const a = address >>> 0;
-          if (a >= REGION.ROM) return;
           const byte = value & 255;
+          if (a >= 234881024 && a < 234946560) {
+            this.writeFlash(a - 234881024, byte);
+            return;
+          }
+          if (a >= REGION.ROM) return;
           if (a >= REGION.EWRAM && a < REGION.EWRAM + 262144) this.ewram[a - REGION.EWRAM] = byte;
           else if (a >= REGION.IWRAM && a < REGION.IWRAM + 32768) this.iwram[a - REGION.IWRAM] = byte;
           else if (a >= REGION.IO && a < REGION.IO + 1024) this.io[a - REGION.IO] = byte;
           else if (a >= REGION.PAL && a < REGION.PAL + 1024) this.palette[a - REGION.PAL] = byte;
           else if (a >= REGION.VRAM && a < REGION.VRAM + 98304) this.vram[a - REGION.VRAM] = byte;
           else if (a >= REGION.OAM && a < REGION.OAM + 1024) this.oam[a - REGION.OAM] = byte;
-          else if (a >= 234881024 && a < 234946560) this.sram[a - 234881024] = byte;
+        }
+        writeFlash(offset, value) {
+          if (value === 240) {
+            this.flashState = 0;
+            this.flashIdMode = false;
+            return;
+          }
+          if (this.flashState === 3) {
+            this.sram[this.flashBank * 65536 + offset] &= value;
+            this.flashState = 0;
+            return;
+          }
+          if (this.flashState === 4) {
+            if (offset === 0) this.flashBank = value & 1;
+            this.flashState = 0;
+            return;
+          }
+          if (this.flashState === 5) {
+            this.flashState = offset === 21845 && value === 170 ? 6 : 0;
+            return;
+          }
+          if (this.flashState === 6) {
+            this.flashState = offset === 10922 && value === 85 ? 7 : 0;
+            return;
+          }
+          if (this.flashState === 7) {
+            if (offset === 21845 && value === 16) this.sram.fill(255);
+            else if (value === 48) {
+              const start = this.flashBank * 65536 + (offset & ~4095);
+              this.sram.fill(255, start, start + 4096);
+            }
+            this.flashState = 0;
+            return;
+          }
+          if (this.flashState === 0) {
+            if (offset === 21845 && value === 170) this.flashState = 1;
+            return;
+          }
+          if (this.flashState === 1) {
+            this.flashState = offset === 10922 && value === 85 ? 2 : 0;
+            return;
+          }
+          if (this.flashState === 2) {
+            this.flashState = 0;
+            if (offset !== 21845) return;
+            if (value === 144) this.flashIdMode = true;
+            else if (value === 160) this.flashState = 3;
+            else if (value === 176) this.flashState = 4;
+            else if (value === 128) this.flashState = 5;
+          }
         }
         write16(address, value) {
           const a = address & ~1;
@@ -88,8 +150,17 @@
             this.writeIo16(a, this.read16(a) & ~(value & 16383));
             return;
           }
+          const timerData = a >= 67109120 && a <= 67109132 && (a - 67109120) % 4 === 0;
+          const timerControl = a >= 67109122 && a <= 67109134 && (a - 67109122) % 4 === 0;
+          const oldControl = timerControl ? this.read16(a) : 0;
           this.write8(a, value);
           this.write8(a + 1, value >>> 8);
+          if (timerData) this.timerReload[a - 67109120 >> 2] = value & 65535;
+          if (timerControl && !(oldControl & 128) && value & 128) {
+            const index = a - 67109122 >> 2;
+            this.writeIo16(a - 2, this.timerReload[index]);
+            this.timerRemainder[index] = 0;
+          }
           if (a >= 67109050 && a <= 67109084 && (a - 67109040) % 12 === 10) this.performDma(Math.floor((a - 67109040) / 12));
         }
         write32(address, value) {
@@ -114,18 +185,36 @@
             if (this.scanline === 160 && displayStatus & 8) this.writeIo16(67109378, this.read16(67109378) | 1);
           }
           for (let index = 0; index < 4; index++) {
-            const base = 256 + index * 4;
             const control = this.read16(67109122 + index * 4);
-            if (!(control & 128)) continue;
-            const divider = [1, 64, 256, 1024][control >>> 0 & 3];
-            const ticks = Math.floor((this.timerRemainder[index] + cycles) / divider);
-            this.timerRemainder[index] = (this.timerRemainder[index] + cycles) % divider;
-            if (!ticks) continue;
-            const value = this.read16(67108864 + base);
-            const next = value + ticks;
-            if (next > 65535) this.writeIo16(67108864 + base, 0);
-            else this.writeIo16(67108864 + base, next);
+            if (!(control & 128) || index && control & 4) continue;
+            const divider = [1, 64, 256, 1024][control & 3];
+            const total = this.timerRemainder[index] + cycles;
+            const ticks = Math.floor(total / divider);
+            this.timerRemainder[index] = total % divider;
+            if (ticks) this.incrementTimer(index, ticks);
           }
+        }
+        incrementTimer(index, ticks) {
+          if (index > 3 || ticks <= 0) return;
+          const address = 67109120 + index * 4;
+          const control = this.read16(address + 2);
+          if (!(control & 128)) return;
+          let value = this.read16(address);
+          let overflows = 0;
+          while (ticks > 0) {
+            const untilOverflow = 65536 - value;
+            if (ticks < untilOverflow) {
+              value += ticks;
+              ticks = 0;
+            } else {
+              ticks -= untilOverflow;
+              value = this.timerReload[index];
+              overflows++;
+            }
+          }
+          this.writeIo16(address, value);
+          if (overflows && control & 64) this.writeIo16(67109378, this.read16(67109378) | 1 << 3 + index);
+          if (overflows && index < 3 && (this.read16(address + 6) & 132) === 132) this.incrementTimer(index + 1, overflows);
         }
         writeIo16(address, value) {
           const offset = address - REGION.IO & 1022;
@@ -1156,7 +1245,7 @@
       return;
     }
     emulator.value = new DuoGba(payload.rom, payload.save);
-    document.querySelector("#status").textContent = "ARM7TDMI \xB7 v\xEDdeo pr\xF3prio \xB7 SRAM";
+    document.querySelector("#status").textContent = "ARM7TDMI \xB7 v\xEDdeo pr\xF3prio \xB7 Flash 1M";
     loop();
     setInterval(() => emulator.value && window.duopocket.saveRom(emulator.value.getSave()), 5e3);
   }
