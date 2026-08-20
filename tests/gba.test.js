@@ -148,6 +148,19 @@ test('PPU desenha BG3 de 256 cores no modo 0', () => {
   assert.notEqual(frame[0], frame[1]);
 });
 
+test('PPU preserva preto opaco e forced blank branco', () => {
+  const memory = new GbaMemory(new Uint8Array()); memory.write16(0x04000000, 0x0100); memory.write16(0x04000008, 0x0100); memory.write16(0x06000800, 1); memory.write8(0x06000020, 1); memory.write16(0x05000000, 0x001f); memory.write16(0x05000002, 0x0000);
+  const ppu = new GbaPpu(memory); const frame = ppu.render(); assert.notEqual(frame[0], frame[1]);
+  memory.write16(0x04000000, 0x0080); assert.equal(ppu.render()[0] >>> 0, ppu.color15(0x7fff) >>> 0);
+});
+
+test('PPU desenha fundo afim no modo 2 e bitmap no modo 5', () => {
+  const memory = new GbaMemory(new Uint8Array()); const ppu = new GbaPpu(memory);
+  memory.write16(0x04000000, 0x0402); memory.write16(0x0400000c, 0x0100); memory.write16(0x04000020, 0x0100); memory.write16(0x04000026, 0x0100); memory.write8(0x06000800, 1); memory.write8(0x06000040, 2); memory.write16(0x05000004, 0x03e0);
+  assert.notEqual(ppu.render()[0], ppu.render()[1]);
+  memory.write16(0x04000000, 5); memory.write16(0x06000000, 0x7c00); assert.equal((ppu.render()[0] >>> 16) & 0xff, 255);
+});
+
 test('ROM ARM mínima executa escrita de vídeo pelo barramento', () => {
   const words = [0xe59f0018, 0xe3a01003, 0xe5801000, 0xe59f2010, 0xe3a0301f, 0xe5823000, 0xeafffffe, 0, 0x04000000, 0x06000000];
   const memory = new GbaMemory(romWithWords(words));
