@@ -949,6 +949,7 @@
         }
         renderMode0() {
           const displayControl = this.memory.read16(67108864);
+          const spriteLines = displayControl & 4096 ? this.buildSpriteLines() : null;
           const bg = [];
           for (let n = 0; n < 4; n++) bg.push(this.memory.read16(67108872 + n * 2));
           for (let y = 0; y < 160; y++) for (let x = 0; x < 240; x++) {
@@ -962,8 +963,10 @@
               best = control & 3;
               color = pixel;
             }
-            const sprite = this.spritePixel(x, y, best);
-            if (sprite) color = sprite;
+            if (spriteLines) {
+              const sprite = this.spritePixel(x, y, best, spriteLines[y]);
+              if (sprite) color = sprite;
+            }
             this.frame[y * 240 + x] = this.color15(color);
           }
           return this.frame;
@@ -997,8 +1000,9 @@
           }
           return this.memory.readPalette(paletteIndex);
         }
-        spritePixel(x, y, bgPriority) {
+        buildSpriteLines() {
           const sizes = [[[8, 8], [16, 8], [8, 16]], [[16, 16], [32, 8], [8, 32]], [[32, 32], [32, 16], [16, 32]], [[64, 64], [64, 32], [32, 64]]];
+          const lines = Array.from({ length: 160 }, () => []);
           for (let i = 127; i >= 0; i--) {
             const base = 117440512 + i * 8;
             const attr0 = this.memory.read16(base);
@@ -1010,8 +1014,16 @@
             const dim = sizes[sizeIndex]?.[shape] || [8, 8];
             const sx = attr1 & 511;
             const sy = attr0 & 255;
-            let px = x - (sx >= 256 ? sx - 512 : sx);
-            let py = y - (sy >= 160 ? sy - 256 : sy);
+            const sprite = { attr0, attr1, attr2, dim, sx: sx >= 256 ? sx - 512 : sx, sy: sy >= 160 ? sy - 256 : sy };
+            for (let y = Math.max(0, sprite.sy); y < Math.min(160, sprite.sy + dim[1]); y++) lines[y].push(sprite);
+          }
+          return lines;
+        }
+        spritePixel(x, y, bgPriority, sprites) {
+          for (const sprite of sprites) {
+            const { attr0, attr1, attr2, dim } = sprite;
+            let px = x - sprite.sx;
+            let py = y - sprite.sy;
             if (px < 0 || py < 0 || px >= dim[0] || py >= dim[1]) continue;
             if (attr1 & 4096) px = dim[0] - 1 - px;
             if (attr1 & 8192) py = dim[1] - 1 - py;

@@ -11,14 +11,20 @@ function smokeRom() {
   return rom;
 }
 
+async function selectedRom() {
+  const requested = process.env.DUOPOCKET_TEST_ROM;
+  return requested ? fs.readFile(requested) : smokeRom();
+}
+
 app.whenReady().then(async () => {
-  ipcMain.handle('game:rom', () => smokeRom());
+  const rom = await selectedRom();
+  ipcMain.handle('game:rom', () => ({ rom, save: null }));
   const root = path.resolve(__dirname, '..');
   const window = new BrowserWindow({ width: 940, height: 720, show: false, backgroundColor: '#171922', webPreferences: { preload: path.join(root, 'src', 'main', 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   await window.loadFile(path.join(root, 'src', 'renderer', 'gba.html'));
-  await new Promise((resolve) => setTimeout(resolve, 800));
+  await new Promise((resolve) => setTimeout(resolve, Number(process.env.DUOPOCKET_CAPTURE_WAIT || 800)));
   const image = await window.webContents.capturePage();
-  const output = path.join(root, 'artifacts', 'gba-core.png');
+  const output = path.join(root, 'artifacts', process.env.DUOPOCKET_TEST_ROM ? 'gba-real-rom.png' : 'gba-core.png');
   await fs.mkdir(path.dirname(output), { recursive: true });
   await fs.writeFile(output, image.toPNG());
   process.stdout.write(`${output}\n`);
