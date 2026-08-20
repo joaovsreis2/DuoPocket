@@ -53,8 +53,14 @@
         read8(address) {
           const a = address >>> 0;
           if (a >= REGION.ROM && a < 234881024 && this.rom.length) return this.rom[(a - REGION.ROM) % this.rom.length];
-          const target = this.region(a);
-          return target ? target[0][target[1] % target[0].length] : 0;
+          if (a >= REGION.EWRAM && a < REGION.EWRAM + 262144) return this.ewram[a - REGION.EWRAM];
+          if (a >= REGION.IWRAM && a < REGION.IWRAM + 32768) return this.iwram[a - REGION.IWRAM];
+          if (a >= REGION.IO && a < REGION.IO + 1024) return this.io[a - REGION.IO];
+          if (a >= REGION.PAL && a < REGION.PAL + 1024) return this.palette[a - REGION.PAL];
+          if (a >= REGION.VRAM && a < REGION.VRAM + 98304) return this.vram[a - REGION.VRAM];
+          if (a >= REGION.OAM && a < REGION.OAM + 1024) return this.oam[a - REGION.OAM];
+          if (a >= 234881024 && a < 234946560) return this.sram[a - 234881024];
+          return 0;
         }
         read16(address) {
           const a = address & ~1;
@@ -67,8 +73,14 @@
         write8(address, value) {
           const a = address >>> 0;
           if (a >= REGION.ROM) return;
-          const target = this.region(a);
-          if (target) target[0][target[1] % target[0].length] = value & 255;
+          const byte = value & 255;
+          if (a >= REGION.EWRAM && a < REGION.EWRAM + 262144) this.ewram[a - REGION.EWRAM] = byte;
+          else if (a >= REGION.IWRAM && a < REGION.IWRAM + 32768) this.iwram[a - REGION.IWRAM] = byte;
+          else if (a >= REGION.IO && a < REGION.IO + 1024) this.io[a - REGION.IO] = byte;
+          else if (a >= REGION.PAL && a < REGION.PAL + 1024) this.palette[a - REGION.PAL] = byte;
+          else if (a >= REGION.VRAM && a < REGION.VRAM + 98304) this.vram[a - REGION.VRAM] = byte;
+          else if (a >= REGION.OAM && a < REGION.OAM + 1024) this.oam[a - REGION.OAM] = byte;
+          else if (a >= 234881024 && a < 234946560) this.sram[a - 234881024] = byte;
         }
         write16(address, value) {
           const a = address & ~1;
@@ -186,6 +198,7 @@
           this.r = new Uint32Array(16);
           this.cpsr = 31;
           this.cycles = 0;
+          this.clockScale = 1;
           this.irqContext = null;
           this.irqReturn = 33554428;
           this.reset();
@@ -305,7 +318,7 @@
           this.r[15] = U32(pc + 4);
           const before = this.cycles;
           this.stepArmInstruction(instr >>> 0);
-          this.memory.tick(this.cycles - before);
+          this.memory.tick((this.cycles - before) * this.clockScale);
           return this.cycles;
         }
         enterInterrupt() {
@@ -619,7 +632,7 @@
           this.r[15] = U32(pc + 2);
           const before = this.cycles;
           this.stepThumbInstruction(instr);
-          this.memory.tick(this.cycles - before);
+          this.memory.tick((this.cycles - before) * this.clockScale);
           return this.cycles;
         }
         stepThumbInstruction(instr) {
@@ -1032,7 +1045,9 @@
           this.memory = new GbaMemory(rom, save);
           this.cpu = new Arm7tdmi(this.memory);
           this.ppu = new GbaPpu(this.memory);
-          this.frameCycles = 280896;
+          this.clockScale = 16;
+          this.cpu.clockScale = this.clockScale;
+          this.frameCycles = Math.ceil(280896 / this.clockScale);
           this.paused = false;
         }
         reset() {

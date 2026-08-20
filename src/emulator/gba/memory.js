@@ -48,8 +48,14 @@ class GbaMemory {
   read8(address) {
     const a = address >>> 0;
     if (a >= REGION.ROM && a < 0x0e000000 && this.rom.length) return this.rom[(a - REGION.ROM) % this.rom.length];
-    const target = this.region(a);
-    return target ? target[0][target[1] % target[0].length] : 0;
+    if (a >= REGION.EWRAM && a < REGION.EWRAM + 0x40000) return this.ewram[a - REGION.EWRAM];
+    if (a >= REGION.IWRAM && a < REGION.IWRAM + 0x8000) return this.iwram[a - REGION.IWRAM];
+    if (a >= REGION.IO && a < REGION.IO + 0x400) return this.io[a - REGION.IO];
+    if (a >= REGION.PAL && a < REGION.PAL + 0x400) return this.palette[a - REGION.PAL];
+    if (a >= REGION.VRAM && a < REGION.VRAM + 0x18000) return this.vram[a - REGION.VRAM];
+    if (a >= REGION.OAM && a < REGION.OAM + 0x400) return this.oam[a - REGION.OAM];
+    if (a >= 0x0e000000 && a < 0x0e010000) return this.sram[a - 0x0e000000];
+    return 0;
   }
 
   read16(address) {
@@ -65,8 +71,14 @@ class GbaMemory {
   write8(address, value) {
     const a = address >>> 0;
     if (a >= REGION.ROM) return;
-    const target = this.region(a);
-    if (target) target[0][target[1] % target[0].length] = value & 0xff;
+    const byte = value & 0xff;
+    if (a >= REGION.EWRAM && a < REGION.EWRAM + 0x40000) this.ewram[a - REGION.EWRAM] = byte;
+    else if (a >= REGION.IWRAM && a < REGION.IWRAM + 0x8000) this.iwram[a - REGION.IWRAM] = byte;
+    else if (a >= REGION.IO && a < REGION.IO + 0x400) this.io[a - REGION.IO] = byte;
+    else if (a >= REGION.PAL && a < REGION.PAL + 0x400) this.palette[a - REGION.PAL] = byte;
+    else if (a >= REGION.VRAM && a < REGION.VRAM + 0x18000) this.vram[a - REGION.VRAM] = byte;
+    else if (a >= REGION.OAM && a < REGION.OAM + 0x400) this.oam[a - REGION.OAM] = byte;
+    else if (a >= 0x0e000000 && a < 0x0e010000) this.sram[a - 0x0e000000] = byte;
   }
 
   write16(address, value) {

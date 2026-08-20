@@ -9,6 +9,7 @@ class Arm7tdmi {
     this.r = new Uint32Array(16);
     this.cpsr = 0x1f;
     this.cycles = 0;
+    this.clockScale = 1;
     this.irqContext = null;
     this.irqReturn = 0x01fffffc;
     this.reset();
@@ -103,7 +104,7 @@ class Arm7tdmi {
     this.r[15] = U32(pc + 4);
     const before = this.cycles;
     this.stepArmInstruction(instr >>> 0);
-    this.memory.tick(this.cycles - before);
+    this.memory.tick((this.cycles - before) * this.clockScale);
     return this.cycles;
   }
 
@@ -264,7 +265,7 @@ class Arm7tdmi {
   }
 
   stepThumb() {
-    const pc = this.r[15] >>> 0; const instr = this.memory.read16(pc); this.r[15] = U32(pc + 2); const before = this.cycles; this.stepThumbInstruction(instr); this.memory.tick(this.cycles - before); return this.cycles;
+    const pc = this.r[15] >>> 0; const instr = this.memory.read16(pc); this.r[15] = U32(pc + 2); const before = this.cycles; this.stepThumbInstruction(instr); this.memory.tick((this.cycles - before) * this.clockScale); return this.cycles;
   }
 
   stepThumbInstruction(instr) {
