@@ -20,9 +20,15 @@ app.whenReady().then(async () => {
   const rom = await selectedRom();
   ipcMain.handle('game:rom', () => ({ rom, save: null }));
   const root = path.resolve(__dirname, '..');
-  const window = new BrowserWindow({ width: 940, height: 720, show: false, backgroundColor: '#171922', webPreferences: { preload: path.join(root, 'src', 'main', 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  const window = new BrowserWindow({ width: 940, height: 720, show: false, backgroundColor: '#171922', webPreferences: { preload: path.join(root, 'src', 'main', 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
   await window.loadFile(path.join(root, 'src', 'renderer', 'gba.html'));
-  await new Promise((resolve) => setTimeout(resolve, Number(process.env.DUOPOCKET_CAPTURE_WAIT || 800)));
+  const wait = Number(process.env.DUOPOCKET_CAPTURE_WAIT || 800);
+  if (process.env.DUOPOCKET_PRESS_START) {
+    const pressAt = Math.min(Number(process.env.DUOPOCKET_PRESS_AT || 5000), wait);
+    await new Promise((resolve) => setTimeout(resolve, pressAt));
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'ENTER' }); window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'ENTER' });
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, wait - pressAt)));
+  } else await new Promise((resolve) => setTimeout(resolve, wait));
   const image = await window.webContents.capturePage();
   const output = path.join(root, 'artifacts', process.env.DUOPOCKET_TEST_ROM ? 'gba-real-rom.png' : 'gba-core.png');
   await fs.mkdir(path.dirname(output), { recursive: true });
