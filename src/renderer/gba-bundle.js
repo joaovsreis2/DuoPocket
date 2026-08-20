@@ -283,8 +283,9 @@
             return;
           }
           if ((instr & 268435440) === 19922704) {
-            this.r[15] = this.r[instr & 15] & ~1;
-            this.thumb = true;
+            const target = this.r[instr & 15] >>> 0;
+            this.r[15] = target & ~1;
+            this.thumb = Boolean(target & 1);
             this.cycles += 3;
             return;
           }
@@ -615,8 +616,9 @@
             else if (opcode === 1) this.sub(this.r[rd], this.r[rs]);
             else if (opcode === 2) this.r[rd] = this.r[rs];
             else {
-              this.r[15] = this.r[rs] & ~1;
-              this.thumb = true;
+              const target = this.r[rs] >>> 0;
+              this.r[15] = target & ~1;
+              this.thumb = Boolean(target & 1);
             }
             this.cycles += 2;
             return;

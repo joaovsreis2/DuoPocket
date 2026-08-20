@@ -107,8 +107,9 @@ class Arm7tdmi {
     const cond = instr >>> 28;
     if (!this.condition(cond)) { this.cycles += 1; return; }
     if ((instr & 0x0ffffff0) === 0x012fff10) {
-      this.r[15] = this.r[instr & 15] & ~1;
-      this.thumb = true; this.cycles += 3; return;
+      const target = this.r[instr & 15] >>> 0;
+      this.r[15] = target & ~1;
+      this.thumb = Boolean(target & 1); this.cycles += 3; return;
     }
     if ((instr & 0x0e000000) === 0x0a000000) {
       let offset = (instr & 0x00ffffff) << 2;
@@ -232,7 +233,7 @@ class Arm7tdmi {
     if ((instr & 0xe000) === 0x0000) { const type = (instr >>> 11) & 3; const amount = (instr >>> 6) & 31; const rs = (instr >>> 3) & 7; const rd = instr & 7; const out = this.shift(this.r[rs], type, amount); this.r[rd] = out.value; this.setFlags(out.value >>> 31, out.value === 0, out.carry); this.cycles++; return; }
     if ((instr & 0xe000) === 0x2000) { const opcode = (instr >>> 11) & 3; const rd = (instr >>> 8) & 7; const value = instr & 0xff; if (opcode === 0) this.r[rd] = value; else if (opcode === 1) this.sub(this.r[rd], value); else if (opcode === 2) this.r[rd] = this.add(this.r[rd], value); else this.r[rd] = this.sub(this.r[rd], value); this.cycles++; return; }
     if ((instr & 0xfc00) === 0x4000) { const opcode = (instr >>> 6) & 15; const rd = instr & 7; const rs = (instr >>> 3) & 7; const a = this.r[rd]; const b = this.r[rs]; let out = a; switch (opcode) { case 0: out = a & b; break; case 1: out = a ^ b; break; case 2: out = this.shift(a, 0, b & 31).value; break; case 3: out = this.shift(a, 1, b & 31).value; break; case 4: out = this.add(a, b); break; case 10: this.sub(a, b); this.cycles++; return; case 11: this.add(a, b); this.cycles++; return; case 12: out = a | b; break; case 13: out = U32(a * b); break; case 14: out = a & ~b; break; case 15: out = ~b; break; default: break; } this.r[rd] = U32(out); this.setFlags(out >>> 31, out === 0); this.cycles++; return; }
-    if ((instr & 0xfc00) === 0x4400) { const opcode = (instr >>> 8) & 3; const rd = (instr & 7) | ((instr >>> 4) & 8); const rs = (instr >>> 3) & 15; if (opcode === 0) this.r[rd] = this.add(this.r[rd], this.r[rs]); else if (opcode === 1) this.sub(this.r[rd], this.r[rs]); else if (opcode === 2) this.r[rd] = this.r[rs]; else { this.r[15] = this.r[rs] & ~1; this.thumb = true; } this.cycles += 2; return; }
+    if ((instr & 0xfc00) === 0x4400) { const opcode = (instr >>> 8) & 3; const rd = (instr & 7) | ((instr >>> 4) & 8); const rs = (instr >>> 3) & 15; if (opcode === 0) this.r[rd] = this.add(this.r[rd], this.r[rs]); else if (opcode === 1) this.sub(this.r[rd], this.r[rs]); else if (opcode === 2) this.r[rd] = this.r[rs]; else { const target = this.r[rs] >>> 0; this.r[15] = target & ~1; this.thumb = Boolean(target & 1); } this.cycles += 2; return; }
     if ((instr & 0xf800) === 0x4800) { const rd = (instr >>> 8) & 7; const address = ((this.r[15] & ~2) + 2 + ((instr & 0xff) << 2)) >>> 0; this.r[rd] = this.memory.read32(address); this.cycles += 2; return; }
     if ((instr & 0xf200) === 0x5000 || (instr & 0xe000) === 0x6000 || (instr & 0xf000) === 0x9000) { this.thumbLoadStore(instr); return; }
     if ((instr & 0xf600) === 0xb400) { const pop = instr & 0x0800; const include = instr & 0x0100; let sp = this.r[13]; if (!pop) { if (include) this.memory.write32(sp - 4, this.r[14]); for (let i = 7; i >= 0; i--) if (instr & (1 << i)) { sp -= 4; this.memory.write32(sp, this.r[i]); } } else { for (let i = 0; i < 8; i++) if (instr & (1 << i)) { this.r[i] = this.memory.read32(sp); sp += 4; } if (include) { this.r[15] = this.memory.read32(sp) & ~1; sp += 4; } } this.r[13] = sp; this.cycles += 2; return; }

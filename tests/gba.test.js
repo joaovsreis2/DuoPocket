@@ -39,6 +39,14 @@ test('ARM7TDMI executa instruções Thumb básicas', () => {
   assert.equal(cpu.r[0], 8);
 });
 
+test('BX preserva corretamente o estado ARM ou Thumb do destino', () => {
+  const memory = new GbaMemory(romWithWords([0xe12fff10]));
+  const cpu = new Arm7tdmi(memory); cpu.r[0] = 0x08000020; cpu.step();
+  assert.equal(cpu.r[15], 0x08000020); assert.equal(cpu.thumb, false);
+  cpu.reset(); cpu.r[0] = 0x08000021; cpu.step();
+  assert.equal(cpu.r[15], 0x08000020); assert.equal(cpu.thumb, true);
+});
+
 test('PPU desenha um pixel no modo 3', () => {
   const memory = new GbaMemory(new Uint8Array(0x40));
   memory.write16(0x04000000, 3);
