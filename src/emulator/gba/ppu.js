@@ -37,19 +37,20 @@ class GbaPpu {
 
   renderMode0(mode = 0) {
     const displayControl = this.memory.read16(0x04000000);
-    const spriteLines = (displayControl & 0x1000) ? this.buildSpriteLines() : null;
+    const spriteLines = (displayControl & 0x9000) ? this.buildSpriteLines() : null;
     const bg = [];
     for (let n = 0; n < 4; n++) bg.push(this.memory.read16(0x04000008 + n * 2));
     for (let y = 0; y < 160; y++) for (let x = 0; x < 240; x++) {
-      let best = 4; let color = this.memory.readPalette(0);
+      const windowMask = this.windowMask(displayControl, spriteLines, x, y); let best = 4; let selectedLayer = 5; let color = this.memory.readPalette(0);
       for (let n = 0; n < 4; n++) {
-        if (!(displayControl & (0x0100 << n))) continue;
+        if (!(displayControl & (0x0100 << n)) || !(windowMask & (1 << n))) continue;
         const control = bg[n];
         if ((mode === 1 && n === 3) || (mode === 2 && n < 2)) continue;
         const affine = (mode === 1 && n === 2) || (mode === 2 && n >= 2); const pixel = affine ? this.affineBgPixel(n, control, x, y) : this.bgPixel(n, control, x, y); if (pixel < 0 || (control & 3) >= best) continue;
-        best = control & 3; color = pixel;
+        best = control & 3; selectedLayer = n; color = pixel;
       }
-      if (spriteLines) { const sprite = this.spritePixel(x, y, best, spriteLines[y], Boolean(displayControl & 0x40)); if (sprite >= 0) color = sprite; }
+      if (spriteLines && (windowMask & 0x10)) { const sprite = this.spritePixel(x, y, best, spriteLines.visible[y], Boolean(displayControl & 0x40)); if (sprite >= 0) { color = sprite; selectedLayer = 4; } }
+      if (windowMask & 0x20) color = this.applyBrightness(color, selectedLayer);
       this.frame[y * 240 + x] = this.color15(color);
     }
     return this.frame;
@@ -62,7 +63,7 @@ class GbaPpu {
     const mapBase = ((control >>> 8) & 31) * 0x800; const charBase = ((control >>> 2) & 3) * 0x4000; const color8 = Boolean(control & 0x80);
     const tileX = worldX >>> 3; const tileY = worldY >>> 3; const screenBlock = (tileX >>> 5) + (tileY >>> 5) * (dimensions[0] >>> 8); const mapIndex = ((tileY & 31) * 32 + (tileX & 31)) * 2;
     const entry = this.memory.read16(0x06000000 + mapBase + screenBlock * 0x800 + mapIndex); const tile = entry & 0x3ff;
-    const px = (entry & 0x4000) ? 7 - (worldX & 7) : (worldX & 7); const py = (entry & 0x8000) ? 7 - (worldY & 7) : (worldY & 7); let paletteIndex;
+    const px = (entry & 0x0400) ? 7 - (worldX & 7) : (worldX & 7); const py = (entry & 0x0800) ? 7 - (worldY & 7) : (worldY & 7); let paletteIndex;
     if (color8) { paletteIndex = this.memory.read8(0x06000000 + charBase + tile * 64 + py * 8 + px); if (!paletteIndex) return -1; }
     else { const packed = this.memory.read8(0x06000000 + charBase + tile * 32 + py * 4 + (px >>> 1)); const nibble = (px & 1) ? packed >>> 4 : packed & 15; if (!nibble) return -1; paletteIndex = nibble + ((entry >>> 12) & 15) * 16; }
     return this.memory.readPalette(paletteIndex);
@@ -79,16 +80,33 @@ class GbaPpu {
 
   buildSpriteLines() {
     const sizes = [[[8, 8], [16, 8], [8, 16]], [[16, 16], [32, 8], [8, 32]], [[32, 32], [32, 16], [16, 32]], [[64, 64], [64, 32], [32, 64]]];
-    const lines = Array.from({ length: 160 }, () => []);
+    const lines = { visible: Array.from({ length: 160 }, () => []), window: Array.from({ length: 160 }, () => []) };
     for (let i = 0; i < 128; i++) {
       const base = 0x07000000 + i * 8; const attr0 = this.memory.read16(base); const attr1 = this.memory.read16(base + 2); const attr2 = this.memory.read16(base + 4);
-      const objectMode = (attr0 >>> 10) & 3; if (objectMode === 2 || objectMode === 3) continue;
+      const objectMode = (attr0 >>> 10) & 3; if (objectMode === 3) continue;
       const affine = Boolean(attr0 & 0x0100); if (!affine && (attr0 & 0x0200)) continue;
       const shape = (attr0 >>> 14) & 3; const sizeIndex = (attr1 >>> 14) & 3; const dim = sizes[sizeIndex]?.[shape] || [8, 8]; const sx = attr1 & 0x1ff; const sy = attr0 & 0xff;
       const box = affine && (attr0 & 0x0200) ? [dim[0] * 2, dim[1] * 2] : dim; const sprite = { attr0, attr1, attr2, dim, box, affine, sx: sx >= 256 ? sx - 512 : sx, sy: sy >= 160 ? sy - 256 : sy };
-      for (let y = Math.max(0, sprite.sy); y < Math.min(160, sprite.sy + box[1]); y++) lines[y].push(sprite);
+      const target = objectMode === 2 ? lines.window : lines.visible; for (let y = Math.max(0, sprite.sy); y < Math.min(160, sprite.sy + box[1]); y++) target[y].push(sprite);
     }
     return lines;
+  }
+
+  windowMask(displayControl, spriteLines, x, y) {
+    if (!(displayControl & 0xe000)) return 0x3f;
+    const inside = (coordinate, packed) => { const start = packed >>> 8; const end = packed & 0xff; return start <= end ? coordinate >= start && coordinate < end : coordinate >= start || coordinate < end; };
+    if ((displayControl & 0x2000) && inside(x, this.memory.read16(0x04000040)) && inside(y, this.memory.read16(0x04000044))) return this.memory.read8(0x04000048) & 0x3f;
+    if ((displayControl & 0x4000) && inside(x, this.memory.read16(0x04000042)) && inside(y, this.memory.read16(0x04000046))) return this.memory.read8(0x04000049) & 0x3f;
+    if ((displayControl & 0x8000) && spriteLines && this.spritePixel(x, y, 4, spriteLines.window[y], Boolean(displayControl & 0x40)) >= 0) return this.memory.read8(0x0400004b) & 0x3f;
+    return this.memory.read8(0x0400004a) & 0x3f;
+  }
+
+  applyBrightness(color, layer) {
+    const control = this.memory.read16(0x04000050); const effect = (control >>> 6) & 3; if (!(control & (1 << layer)) || effect < 2) return color;
+    const amount = Math.min(16, this.memory.read16(0x04000054) & 31); let red = color & 31; let green = (color >>> 5) & 31; let blue = (color >>> 10) & 31;
+    if (effect === 2) { red += ((31 - red) * amount) >> 4; green += ((31 - green) * amount) >> 4; blue += ((31 - blue) * amount) >> 4; }
+    else { red -= (red * amount) >> 4; green -= (green * amount) >> 4; blue -= (blue * amount) >> 4; }
+    return red | (green << 5) | (blue << 10);
   }
 
   spritePixel(x, y, bgPriority, sprites, oneDimensional) {

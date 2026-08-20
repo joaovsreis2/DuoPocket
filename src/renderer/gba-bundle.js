@@ -374,10 +374,22 @@
         shift(value, type, amount, carryIn = this.c) {
           value >>>= 0;
           if (!amount) return { value, carry: carryIn };
-          if (type === 0) return { value: U32(value << amount), carry: value >>> 32 - amount & 1 };
-          if (type === 1) return { value: value >>> amount, carry: value >>> amount - 1 & 1 };
-          if (type === 2) return { value: U32(S32(value) >> amount), carry: value >>> amount - 1 & 1 };
-          const rotate = amount % 32 || 32;
+          if (type === 0) {
+            if (amount > 32) return { value: 0, carry: 0 };
+            if (amount === 32) return { value: 0, carry: value & 1 };
+            return { value: U32(value << amount), carry: value >>> 32 - amount & 1 };
+          }
+          if (type === 1) {
+            if (amount > 32) return { value: 0, carry: 0 };
+            if (amount === 32) return { value: 0, carry: value >>> 31 };
+            return { value: value >>> amount, carry: value >>> amount - 1 & 1 };
+          }
+          if (type === 2) {
+            if (amount >= 32) return { value: value >>> 31 ? 4294967295 : 0, carry: value >>> 31 };
+            return { value: U32(S32(value) >> amount), carry: value >>> amount - 1 & 1 };
+          }
+          const rotate = amount & 31;
+          if (!rotate) return { value, carry: value >>> 31 };
           return { value: U32(value >>> rotate | value << 32 - rotate), carry: value >>> rotate - 1 & 1 };
         }
         armOperand(instr) {
@@ -390,7 +402,15 @@
           const rm = instr & 15;
           const value = rm === 15 ? U32(this.r[rm] + 4) : this.r[rm];
           const type = instr >>> 5 & 3;
-          const amount = instr >>> 7 & 31;
+          let amount;
+          if (instr & 16) amount = this.r[instr >>> 8 & 15] & 255;
+          else {
+            amount = instr >>> 7 & 31;
+            if (!amount && type) {
+              if (type === 3) return { value: U32(this.c << 31 | value >>> 1), carry: value & 1 };
+              amount = 32;
+            }
+          }
           return this.shift(value, type, amount, this.c);
         }
         step() {
@@ -436,9 +456,51 @@
           if ((instr & 234881024) === 167772160) {
             let offset = (instr & 16777215) << 2;
             if (offset & 33554432) offset |= 4227858432;
-            if (instr & 16777216) this.r[14] = U32(this.r[15] - 4);
+            if (instr & 16777216) this.r[14] = this.r[15] >>> 0;
             this.r[15] = U32(this.r[15] + 4 + offset);
             this.cycles += 3;
+            return;
+          }
+          if ((instr & 264179711) === 17760256) {
+            this.r[instr >>> 12 & 15] = this.cpsr >>> 0;
+            this.cycles++;
+            return;
+          }
+          if ((instr & 229703664) === 18935808 || (instr & 229699584) === 52490240) {
+            const immediate = Boolean(instr & 33554432);
+            const value = immediate ? this.armOperand(instr).value : this.r[instr & 15];
+            this.writePsr(value, instr >>> 16 & 15);
+            this.cycles++;
+            return;
+          }
+          if ((instr & 260047088) === 8388752) {
+            const signed = Boolean(instr & 4194304);
+            const accumulate = Boolean(instr & 2097152);
+            const set = Boolean(instr & 1048576);
+            const rdHi = instr >>> 16 & 15;
+            const rdLo = instr >>> 12 & 15;
+            const rm = instr & 15;
+            const rs = instr >>> 8 & 15;
+            let result = signed ? BigInt(S32(this.r[rm])) * BigInt(S32(this.r[rs])) : BigInt(this.r[rm]) * BigInt(this.r[rs]);
+            if (accumulate) result += BigInt(this.r[rdHi]) << 32n | BigInt(this.r[rdLo]);
+            result &= 0xffffffffffffffffn;
+            this.r[rdLo] = Number(result & 0xffffffffn);
+            this.r[rdHi] = Number(result >> 32n & 0xffffffffn);
+            if (set) this.setFlags(this.r[rdHi] >>> 31, result === 0n);
+            this.cycles += 3;
+            return;
+          }
+          if ((instr & 263196656) === 16777360) {
+            const byte = Boolean(instr & 4194304);
+            const rn = instr >>> 16 & 15;
+            const rd = instr >>> 12 & 15;
+            const rm = instr & 15;
+            const address = this.r[rn];
+            const old = byte ? this.memory.read8(address) : this.memory.read32(address);
+            if (byte) this.memory.write8(address, this.r[rm]);
+            else this.memory.write32(address, this.r[rm]);
+            this.r[rd] = old;
+            this.cycles += 4;
             return;
           }
           if ((instr & 234881168) === 144 && (instr & 264241392) !== 144) {
@@ -455,9 +517,10 @@
           }
           if ((instr & 264241392) === 144) {
             const rd = instr >>> 16 & 15;
+            const rn = instr >>> 12 & 15;
             const rm = instr & 15;
             const rs = instr >>> 8 & 15;
-            this.r[rd] = U32(this.r[rm] * this.r[rs]);
+            this.r[rd] = U32(Math.imul(this.r[rm], this.r[rs]) + (instr & 2097152 ? this.r[rn] : 0));
             if (instr & 1048576) this.setFlags(this.r[rd] >>> 31, this.r[rd] === 0);
             this.cycles += 2;
             return;
@@ -471,6 +534,14 @@
             return;
           }
           this.cycles += 1;
+        }
+        writePsr(value, fields) {
+          let mask = 0;
+          if (fields & 1) mask |= 255;
+          if (fields & 2) mask |= 65280;
+          if (fields & 4) mask |= 16711680;
+          if (fields & 8) mask |= 4278190080;
+          this.cpsr = U32(this.cpsr & ~mask | value & mask);
         }
         handleSwi(code) {
           switch (code) {
@@ -531,7 +602,7 @@
             case 12: {
               const source = this.r[0] >>> 0;
               const destination = this.r[1] >>> 0;
-              const words = (this.r[2] & 2097151) * 8;
+              const words = this.r[2] & 2097151 & ~7;
               const fill = Boolean(this.r[2] & 16777216);
               const fixed = this.memory.read32(source);
               for (let i = 0; i < words; i++) this.memory.write32(destination + i * 4, fill ? fixed : this.memory.read32(source + i * 4));
@@ -544,6 +615,22 @@
               this.lz77Uncompress(this.r[0] >>> 0, this.r[1] >>> 0);
               return;
             }
+            case 19:
+              this.huffmanUncompress(this.r[0] >>> 0, this.r[1] >>> 0);
+              return;
+            case 20:
+            // RLUnCompWram
+            case 21:
+              this.rlUncompress(this.r[0] >>> 0, this.r[1] >>> 0);
+              return;
+            case 22:
+            // Diff8bitUnFilterWram
+            case 23:
+              this.diff8Unfilter(this.r[0] >>> 0, this.r[1] >>> 0);
+              return;
+            case 24:
+              this.diff16Unfilter(this.r[0] >>> 0, this.r[1] >>> 0);
+              return;
             case 14:
             // BgAffineSet / no-op fallback
             case 5:
@@ -583,6 +670,88 @@
           }
           for (let index = 0; index < output.length; index++) this.memory.write8(destination + index, output[index]);
           this.cycles += Math.max(4, output.length);
+        }
+        writeBiosOutput(destination, output) {
+          for (let index = 0; index < output.length; index++) this.memory.write8(destination + index, output[index]);
+          this.cycles += Math.max(4, output.length);
+        }
+        rlUncompress(source, destination) {
+          const length = this.memory.read32(source) >>> 8;
+          source = U32(source + 4);
+          const output = new Uint8Array(length);
+          let position = 0;
+          while (position < length) {
+            const control = this.memory.read8(source++);
+            const compressed = Boolean(control & 128);
+            const count = (control & 127) + (compressed ? 3 : 1);
+            if (compressed) {
+              const value = this.memory.read8(source++);
+              for (let i = 0; i < count && position < length; i++) output[position++] = value;
+            } else for (let i = 0; i < count && position < length; i++) output[position++] = this.memory.read8(source++);
+          }
+          this.writeBiosOutput(destination, output);
+        }
+        diff8Unfilter(source, destination) {
+          const length = this.memory.read32(source) >>> 8;
+          source = U32(source + 4);
+          const output = new Uint8Array(length);
+          if (length) output[0] = this.memory.read8(source++);
+          for (let index = 1; index < length; index++) output[index] = output[index - 1] + this.memory.read8(source++) & 255;
+          this.writeBiosOutput(destination, output);
+        }
+        diff16Unfilter(source, destination) {
+          const length = this.memory.read32(source) >>> 8;
+          source = U32(source + 4);
+          const output = new Uint8Array(length);
+          let previous = this.memory.read16(source);
+          source += 2;
+          if (length >= 2) {
+            output[0] = previous;
+            output[1] = previous >>> 8;
+          }
+          for (let index = 2; index + 1 < length; index += 2) {
+            previous = previous + this.memory.read16(source) & 65535;
+            source += 2;
+            output[index] = previous;
+            output[index + 1] = previous >>> 8;
+          }
+          this.writeBiosOutput(destination, output);
+        }
+        huffmanUncompress(source, destination) {
+          const header = this.memory.read32(source);
+          const length = header >>> 8;
+          const bitsPerSymbol = header & 15;
+          const treeSize = this.memory.read8(source + 4);
+          const tree = U32(source + 5);
+          let stream = U32(tree + (treeSize + 1) * 2 + 3 & ~3);
+          const symbols = [];
+          let word = 0;
+          let bitsLeft = 0;
+          while (symbols.length * bitsPerSymbol < length * 8) {
+            let nodeAddress = tree;
+            while (true) {
+              const node = this.memory.read8(nodeAddress);
+              if (!bitsLeft) {
+                word = this.memory.read32(stream);
+                stream += 4;
+                bitsLeft = 32;
+              }
+              const right = Boolean(word & 2147483648);
+              word = U32(word << 1);
+              bitsLeft--;
+              const child = nodeAddress + ((node & 63) + 1) * 2 + (right ? 1 : 0);
+              const leaf = node & (right ? 128 : 64);
+              if (leaf) {
+                symbols.push(this.memory.read8(child));
+                break;
+              }
+              nodeAddress = child;
+            }
+          }
+          const output = new Uint8Array(length);
+          if (bitsPerSymbol === 4) for (let index = 0; index < symbols.length && index >> 1 < length; index++) output[index >> 1] |= (symbols[index] & 15) << (index & 1) * 4;
+          else for (let index = 0; index < length; index++) output[index] = symbols[index] || 0;
+          this.writeBiosOutput(destination, output);
         }
         armLoadStore(instr) {
           const i = instr >>> 25 & 1;
@@ -638,7 +807,7 @@
           let step = 4;
           if (u) address = U32(base + (p ? 4 : 0));
           else if (p) address = U32(base - regs.length * 4), step = 4;
-          else address = U32(base - 4), step = -4;
+          else address = U32(base - Math.max(0, regs.length - 1) * 4), step = 4;
           for (const reg of regs) {
             if (l) this.r[reg] = this.memory.read32(address);
             else this.memory.write32(address, this.r[reg]);
@@ -652,7 +821,8 @@
           const set = instr >>> 20 & 1;
           const rn = instr >>> 16 & 15;
           const rd = instr >>> 12 & 15;
-          const operand = this.armOperand(instr).value;
+          const shifted = this.armOperand(instr);
+          const operand = shifted.value;
           const a = rn === 15 ? U32(this.r[rn] + 4) : this.r[rn];
           let result = 0;
           switch (opcode) {
@@ -682,11 +852,11 @@
               break;
             case 8:
               result = a & operand;
-              this.setFlags(result >>> 31, result === 0);
+              this.setFlags(result >>> 31, result === 0, shifted.carry);
               break;
             case 9:
               result = a ^ operand;
-              this.setFlags(result >>> 31, result === 0);
+              this.setFlags(result >>> 31, result === 0, shifted.carry);
               break;
             case 10:
               this.sub(a, operand, 1, true);
@@ -710,7 +880,10 @@
               return;
           }
           if (opcode < 8 || opcode === 12 || opcode === 13 || opcode === 14 || opcode === 15) {
-            if (set) this.setFlags(result >>> 31, result === 0);
+            if (set) {
+              const logical = opcode === 0 || opcode === 1 || opcode >= 12;
+              this.setFlags(result >>> 31, result === 0, logical ? shifted.carry : this.c, this.v);
+            }
             if (![8, 9, 10, 11].includes(opcode)) this.r[rd] = U32(result);
           }
           this.cycles += 1;
@@ -742,7 +915,8 @@
           }
           if ((instr & 57344) === 0) {
             const type = instr >>> 11 & 3;
-            const amount = instr >>> 6 & 31;
+            let amount = instr >>> 6 & 31;
+            if (!amount && type) amount = 32;
             const rs = instr >>> 3 & 7;
             const rd = instr & 7;
             const out = this.shift(this.r[rs], type, amount);
@@ -1051,26 +1225,33 @@
         }
         renderMode0(mode = 0) {
           const displayControl = this.memory.read16(67108864);
-          const spriteLines = displayControl & 4096 ? this.buildSpriteLines() : null;
+          const spriteLines = displayControl & 36864 ? this.buildSpriteLines() : null;
           const bg = [];
           for (let n = 0; n < 4; n++) bg.push(this.memory.read16(67108872 + n * 2));
           for (let y = 0; y < 160; y++) for (let x = 0; x < 240; x++) {
+            const windowMask = this.windowMask(displayControl, spriteLines, x, y);
             let best = 4;
+            let selectedLayer = 5;
             let color = this.memory.readPalette(0);
             for (let n = 0; n < 4; n++) {
-              if (!(displayControl & 256 << n)) continue;
+              if (!(displayControl & 256 << n) || !(windowMask & 1 << n)) continue;
               const control = bg[n];
               if (mode === 1 && n === 3 || mode === 2 && n < 2) continue;
               const affine = mode === 1 && n === 2 || mode === 2 && n >= 2;
               const pixel = affine ? this.affineBgPixel(n, control, x, y) : this.bgPixel(n, control, x, y);
               if (pixel < 0 || (control & 3) >= best) continue;
               best = control & 3;
+              selectedLayer = n;
               color = pixel;
             }
-            if (spriteLines) {
-              const sprite = this.spritePixel(x, y, best, spriteLines[y], Boolean(displayControl & 64));
-              if (sprite >= 0) color = sprite;
+            if (spriteLines && windowMask & 16) {
+              const sprite = this.spritePixel(x, y, best, spriteLines.visible[y], Boolean(displayControl & 64));
+              if (sprite >= 0) {
+                color = sprite;
+                selectedLayer = 4;
+              }
             }
+            if (windowMask & 32) color = this.applyBrightness(color, selectedLayer);
             this.frame[y * 240 + x] = this.color15(color);
           }
           return this.frame;
@@ -1090,8 +1271,8 @@
           const mapIndex = ((tileY & 31) * 32 + (tileX & 31)) * 2;
           const entry = this.memory.read16(100663296 + mapBase + screenBlock * 2048 + mapIndex);
           const tile = entry & 1023;
-          const px = entry & 16384 ? 7 - (worldX & 7) : worldX & 7;
-          const py = entry & 32768 ? 7 - (worldY & 7) : worldY & 7;
+          const px = entry & 1024 ? 7 - (worldX & 7) : worldX & 7;
+          const py = entry & 2048 ? 7 - (worldY & 7) : worldY & 7;
           let paletteIndex;
           if (color8) {
             paletteIndex = this.memory.read8(100663296 + charBase + tile * 64 + py * 8 + px);
@@ -1130,14 +1311,14 @@
         }
         buildSpriteLines() {
           const sizes = [[[8, 8], [16, 8], [8, 16]], [[16, 16], [32, 8], [8, 32]], [[32, 32], [32, 16], [16, 32]], [[64, 64], [64, 32], [32, 64]]];
-          const lines = Array.from({ length: 160 }, () => []);
+          const lines = { visible: Array.from({ length: 160 }, () => []), window: Array.from({ length: 160 }, () => []) };
           for (let i = 0; i < 128; i++) {
             const base = 117440512 + i * 8;
             const attr0 = this.memory.read16(base);
             const attr1 = this.memory.read16(base + 2);
             const attr2 = this.memory.read16(base + 4);
             const objectMode = attr0 >>> 10 & 3;
-            if (objectMode === 2 || objectMode === 3) continue;
+            if (objectMode === 3) continue;
             const affine = Boolean(attr0 & 256);
             if (!affine && attr0 & 512) continue;
             const shape = attr0 >>> 14 & 3;
@@ -1147,9 +1328,41 @@
             const sy = attr0 & 255;
             const box = affine && attr0 & 512 ? [dim[0] * 2, dim[1] * 2] : dim;
             const sprite = { attr0, attr1, attr2, dim, box, affine, sx: sx >= 256 ? sx - 512 : sx, sy: sy >= 160 ? sy - 256 : sy };
-            for (let y = Math.max(0, sprite.sy); y < Math.min(160, sprite.sy + box[1]); y++) lines[y].push(sprite);
+            const target = objectMode === 2 ? lines.window : lines.visible;
+            for (let y = Math.max(0, sprite.sy); y < Math.min(160, sprite.sy + box[1]); y++) target[y].push(sprite);
           }
           return lines;
+        }
+        windowMask(displayControl, spriteLines, x, y) {
+          if (!(displayControl & 57344)) return 63;
+          const inside = (coordinate, packed) => {
+            const start = packed >>> 8;
+            const end = packed & 255;
+            return start <= end ? coordinate >= start && coordinate < end : coordinate >= start || coordinate < end;
+          };
+          if (displayControl & 8192 && inside(x, this.memory.read16(67108928)) && inside(y, this.memory.read16(67108932))) return this.memory.read8(67108936) & 63;
+          if (displayControl & 16384 && inside(x, this.memory.read16(67108930)) && inside(y, this.memory.read16(67108934))) return this.memory.read8(67108937) & 63;
+          if (displayControl & 32768 && spriteLines && this.spritePixel(x, y, 4, spriteLines.window[y], Boolean(displayControl & 64)) >= 0) return this.memory.read8(67108939) & 63;
+          return this.memory.read8(67108938) & 63;
+        }
+        applyBrightness(color, layer) {
+          const control = this.memory.read16(67108944);
+          const effect = control >>> 6 & 3;
+          if (!(control & 1 << layer) || effect < 2) return color;
+          const amount = Math.min(16, this.memory.read16(67108948) & 31);
+          let red = color & 31;
+          let green = color >>> 5 & 31;
+          let blue = color >>> 10 & 31;
+          if (effect === 2) {
+            red += (31 - red) * amount >> 4;
+            green += (31 - green) * amount >> 4;
+            blue += (31 - blue) * amount >> 4;
+          } else {
+            red -= red * amount >> 4;
+            green -= green * amount >> 4;
+            blue -= blue * amount >> 4;
+          }
+          return red | green << 5 | blue << 10;
         }
         spritePixel(x, y, bgPriority, sprites, oneDimensional) {
           for (const sprite of sprites) {

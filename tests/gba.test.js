@@ -54,6 +54,10 @@ test('STMDB/LDMIA atualiza a pilha com a ordem correta', () => {
   cpu.r[0] = 0; cpu.r[1] = 0; cpu.step(); assert.equal(cpu.r[0], 0x11111111); assert.equal(cpu.r[1], 0x22222222); assert.equal(cpu.r[13], 0x02000020);
 });
 
+test('STMDA armazena registradores em endereços ascendentes', () => {
+  const memory = new GbaMemory(romWithWords([0xe8240007])); const cpu = new Arm7tdmi(memory); cpu.r[0] = 1; cpu.r[1] = 2; cpu.r[2] = 3; cpu.r[4] = 0x02000008; cpu.step(); assert.equal(memory.read32(0x02000000), 1); assert.equal(memory.read32(0x02000004), 2); assert.equal(memory.read32(0x02000008), 3); assert.equal(cpu.r[4], 0x01fffffc);
+});
+
 test('BL Thumb retorna para a instrução seguinte e SWI Thumb é tratado', () => {
   const rom = new Uint8Array(0x40);
   rom[0] = 0x00; rom[1] = 0xf0; rom[2] = 0x02; rom[3] = 0xf8; // BL +4
@@ -103,6 +107,10 @@ test('BIOS CpuSet respeita cópia de 16 bits sem sobrescrever bytes vizinhos', (
   assert.equal(memory.read16(0x02000010), 0x1234); assert.equal(memory.read16(0x02000012), 0xabcd);
 });
 
+test('BIOS CpuFastSet conta words e não multiplica o comprimento por oito', () => {
+  const memory = new GbaMemory(new Uint8Array()); const cpu = new Arm7tdmi(memory); for (let index = 0; index < 12; index++) memory.write32(0x02000000 + index * 4, index + 1); cpu.r[0] = 0x02000000; cpu.r[1] = 0x02000100; cpu.r[2] = 8; cpu.handleSwi(0x0c); assert.equal(memory.read32(0x0200011c), 8); assert.equal(memory.read32(0x02000120), 0);
+});
+
 test('LDR literal Thumb usa PC+4 alinhado em quatro bytes', () => {
   const rom = new Uint8Array(0x40); rom[0] = 0x00; rom[1] = 0x48; rom[4] = 0x78; rom[5] = 0x56; rom[6] = 0x34; rom[7] = 0x12;
   const cpu = new Arm7tdmi(new GbaMemory(rom)); cpu.thumb = true; cpu.step(); assert.equal(cpu.r[0], 0x12345678);
@@ -122,10 +130,29 @@ test('data processing ARM lê PC como endereço da instrução mais oito', () =>
   const memory = new GbaMemory(romWithWords([0xe28fe000])); const cpu = new Arm7tdmi(memory); cpu.step(); assert.equal(cpu.r[14], 0x08000008);
 });
 
+test('BL ARM retorna para a instrução imediatamente seguinte', () => {
+  const memory = new GbaMemory(romWithWords([0xeb000002, 0xe3a01002, 0, 0, 0xe3a00001, 0xe12fff1e])); const cpu = new Arm7tdmi(memory); cpu.step(); cpu.step(); cpu.step(); cpu.step(); assert.equal(cpu.r[0], 1); assert.equal(cpu.r[1], 2); assert.equal(cpu.r[15], 0x08000008);
+});
+
+test('ARM executa MLA, UMULL e acesso ao CPSR', () => {
+  const memory = new GbaMemory(romWithWords([0xe0203291, 0xe0810392, 0xe128f004, 0xe10f5000])); const cpu = new Arm7tdmi(memory); cpu.r[1] = 4; cpu.r[2] = 3; cpu.r[3] = 2; cpu.r[4] = 0xa0000000; cpu.step(); assert.equal(cpu.r[0], 14); cpu.step(); assert.equal(cpu.r[0], 6); assert.equal(cpu.r[1], 0); cpu.step(); cpu.step(); assert.equal((cpu.r[5] & 0xf0000000) >>> 0, 0xa0000000);
+});
+
+test('shifts ARM e Thumb tratam deslocamento imediato zero como 32', () => {
+  const memory = new GbaMemory(romWithWords([0xe1b00021])); const cpu = new Arm7tdmi(memory); cpu.r[1] = 0x80000000; cpu.step(); assert.equal(cpu.r[0], 0); assert.equal(cpu.c, 1);
+  cpu.thumb = true; cpu.r[15] = 0x02000000; memory.write16(0x02000000, 0x0808); cpu.r[1] = 0x80000000; cpu.step(); assert.equal(cpu.r[0], 0); assert.equal(cpu.c, 1);
+});
+
 test('BIOS LZ77 descompacta literais e referências para VRAM', () => {
   const rom = new Uint8Array(0x40); rom.set([0x10, 0x08, 0x00, 0x00, 0x10, 65, 66, 67, 0x20, 0x02], 0);
   const memory = new GbaMemory(rom); const cpu = new Arm7tdmi(memory); cpu.r[0] = 0x08000000; cpu.r[1] = 0x06000000; cpu.handleSwi(0x12);
   assert.deepEqual(Array.from(memory.vram.slice(0, 8)), [65, 66, 67, 65, 66, 67, 65, 66]);
+});
+
+test('BIOS descompacta RLE e filtros diferenciais', () => {
+  const rom = new Uint8Array(0x40); rom.set([0x30, 6, 0, 0, 0x82, 7, 0, 9], 0); rom.set([0x80, 4, 0, 0, 1, 2, 0xff, 1], 0x10);
+  const memory = new GbaMemory(rom); const cpu = new Arm7tdmi(memory); cpu.r[0] = 0x08000000; cpu.r[1] = 0x02000000; cpu.handleSwi(0x14); assert.deepEqual(Array.from(memory.ewram.slice(0, 6)), [7, 7, 7, 7, 7, 9]);
+  cpu.r[0] = 0x08000010; cpu.r[1] = 0x02000010; cpu.handleSwi(0x16); assert.deepEqual(Array.from(memory.ewram.slice(0x10, 0x14)), [1, 3, 2, 3]);
 });
 
 test('PPU desenha um pixel no modo 3', () => {
@@ -159,6 +186,13 @@ test('PPU desenha fundo afim no modo 2 e bitmap no modo 5', () => {
   memory.write16(0x04000000, 0x0402); memory.write16(0x0400000c, 0x0100); memory.write16(0x04000020, 0x0100); memory.write16(0x04000026, 0x0100); memory.write8(0x06000800, 1); memory.write8(0x06000040, 2); memory.write16(0x05000004, 0x03e0);
   assert.notEqual(ppu.render()[0], ppu.render()[1]);
   memory.write16(0x04000000, 5); memory.write16(0x06000000, 0x7c00); assert.equal((ppu.render()[0] >>> 16) & 0xff, 255);
+});
+
+test('PPU respeita máscara de janela e brilho do GBA', () => {
+  const memory = new GbaMemory(new Uint8Array()); const ppu = new GbaPpu(memory); memory.write16(0x05000000, 0x0000); memory.write16(0x04000050, 0x00a0); memory.write16(0x04000054, 16);
+  const bright = ppu.render()[0]; assert.equal(bright >>> 0, ppu.color15(0x7fff) >>> 0);
+  memory.write16(0x04000000, 0x2100); memory.write16(0x04000040, 0x00f0); memory.write16(0x04000044, 0x00a0); memory.write16(0x04000048, 0); memory.write16(0x04000050, 0); memory.write16(0x04000008, 0x0100); memory.write16(0x06000800, 1); memory.write8(0x06000020, 1); memory.write16(0x05000002, 0x001f);
+  assert.equal(ppu.render()[0] >>> 0, ppu.color15(0) >>> 0);
 });
 
 test('ROM ARM mínima executa escrita de vídeo pelo barramento', () => {
