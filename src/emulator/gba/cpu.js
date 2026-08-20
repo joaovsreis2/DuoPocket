@@ -172,8 +172,9 @@ class Arm7tdmi {
         this.r[0] = Math.floor(Math.sqrt(this.r[0] >>> 0)) >>> 0; this.cycles += 4; return;
       }
       case 0x09: { // ArcTan2 (fixed-point approximation)
-        const x = S32(this.r[0]); const y = S32(this.r[1]); this.r[0] = Math.round(Math.atan2(y, x) * 32768 / Math.PI) & 0xffff; this.cycles += 4; return;
+        const tangent = ((this.r[0] << 16) >> 16) / 16384; this.r[0] = Math.round(Math.atan(tangent) * 32768 / Math.PI) & 0xffff; this.cycles += 4; return;
       }
+      case 0x0a: { const x = (this.r[0] << 16) >> 16; const y = (this.r[1] << 16) >> 16; this.r[0] = Math.round(Math.atan2(y, x) * 32768 / Math.PI) & 0xffff; this.cycles += 4; return; }
       case 0x0b: { // CpuSet: unidades de halfword ou word
         const source = this.r[0] >>> 0; const destination = this.r[1] >>> 0; const count = this.r[2] & 0x1fffff; const fill = Boolean(this.r[2] & 0x01000000); const wordMode = Boolean(this.r[2] & 0x04000000); const width = wordMode ? 4 : 2; const fixed = wordMode ? this.memory.read32(source) : this.memory.read16(source);
         for (let i = 0; i < count; i++) { const value = fill ? fixed : (wordMode ? this.memory.read32(source + i * width) : this.memory.read16(source + i * width)); if (wordMode) this.memory.write32(destination + i * width, value); else this.memory.write16(destination + i * width, value); }
@@ -184,6 +185,9 @@ class Arm7tdmi {
         for (let i = 0; i < words; i++) this.memory.write32(destination + i * 4, fill ? fixed : this.memory.read32(source + i * 4));
         this.cycles += words; return;
       }
+      case 0x0e: this.bgAffineSet(this.r[0] >>> 0, this.r[1] >>> 0, this.r[2] >>> 0); return;
+      case 0x0f: this.objAffineSet(this.r[0] >>> 0, this.r[1] >>> 0, this.r[2] >>> 0, this.r[3] >>> 0); return;
+      case 0x10: this.bitUnpack(this.r[0] >>> 0, this.r[1] >>> 0, this.r[2] >>> 0); return;
       case 0x11: // LZ77UnCompWram
       case 0x12: { // LZ77UnCompVram
         this.lz77Uncompress(this.r[0] >>> 0, this.r[1] >>> 0); return;
@@ -194,7 +198,6 @@ class Arm7tdmi {
       case 0x16: // Diff8bitUnFilterWram
       case 0x17: this.diff8Unfilter(this.r[0] >>> 0, this.r[1] >>> 0); return;
       case 0x18: this.diff16Unfilter(this.r[0] >>> 0, this.r[1] >>> 0); return;
-      case 0x0e: // BgAffineSet / no-op fallback
       case 0x05: // VBlankIntrWait
       case 0x04: // IntrWait
       case 0x02: // Halt
@@ -217,6 +220,14 @@ class Arm7tdmi {
   }
 
   writeBiosOutput(destination, output) { for (let index = 0; index < output.length; index++) this.memory.write8(destination + index, output[index]); this.cycles += Math.max(4, output.length); }
+
+  affineParameters(scaleX, scaleY, angle) { const radians = ((angle >>> 8) & 0xff) * Math.PI * 2 / 256; const cosine = Math.cos(radians); const sine = Math.sin(radians); const sx = scaleX || 0x100; const sy = scaleY || 0x100; return { pa: Math.trunc(cosine * 65536 / sx), pb: Math.trunc(-sine * 65536 / sx), pc: Math.trunc(sine * 65536 / sy), pd: Math.trunc(cosine * 65536 / sy) }; }
+
+  bgAffineSet(source, destination, count) { for (let index = 0; index < count; index++, source += 20, destination += 16) { const texX = S32(this.memory.read32(source)); const texY = S32(this.memory.read32(source + 4)); const scrX = (this.memory.read16(source + 8) << 16) >> 16; const scrY = (this.memory.read16(source + 10) << 16) >> 16; const scaleX = this.memory.read16(source + 12); const scaleY = this.memory.read16(source + 14); const angle = this.memory.read16(source + 16); const { pa, pb, pc, pd } = this.affineParameters(scaleX, scaleY, angle); this.memory.write16(destination, pa); this.memory.write16(destination + 2, pb); this.memory.write16(destination + 4, pc); this.memory.write16(destination + 6, pd); this.memory.write32(destination + 8, U32(texX - pa * scrX - pb * scrY)); this.memory.write32(destination + 12, U32(texY - pc * scrX - pd * scrY)); } this.cycles += Math.max(4, count * 8); }
+
+  objAffineSet(source, destination, count, offset) { for (let index = 0; index < count; index++, source += 8, destination += offset * 4) { const scaleX = this.memory.read16(source); const scaleY = this.memory.read16(source + 2); const angle = this.memory.read16(source + 4); const { pa, pb, pc, pd } = this.affineParameters(scaleX, scaleY, angle); this.memory.write16(destination, pa); this.memory.write16(destination + offset, pb); this.memory.write16(destination + offset * 2, pc); this.memory.write16(destination + offset * 3, pd); } this.cycles += Math.max(4, count * 4); }
+
+  bitUnpack(source, destination, info) { const sourceLength = this.memory.read16(info); const sourceWidth = this.memory.read8(info + 2); const destinationWidth = this.memory.read8(info + 3); const offsetControl = this.memory.read32(info + 4); const addZero = Boolean(offsetControl & 0x80000000); const offset = offsetControl & 0x7fffffff; const sourceMask = (1 << sourceWidth) - 1; let outputWord = 0; let outputBits = 0; for (let byteIndex = 0; byteIndex < sourceLength; byteIndex++) { const packed = this.memory.read8(source + byteIndex); for (let bit = 0; bit < 8; bit += sourceWidth) { let value = (packed >>> bit) & sourceMask; if (value || addZero) value = U32(value + offset); if (destinationWidth === 32) { this.memory.write32(destination, value); destination += 4; } else { outputWord = U32(outputWord | (value << outputBits)); outputBits += destinationWidth; if (outputBits >= 32) { this.memory.write32(destination, outputWord); destination += 4; outputWord = 0; outputBits = 0; } } } } if (outputBits) this.memory.write32(destination, outputWord); this.cycles += Math.max(4, sourceLength); }
 
   rlUncompress(source, destination) {
     const length = this.memory.read32(source) >>> 8; source = U32(source + 4); const output = new Uint8Array(length); let position = 0;

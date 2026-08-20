@@ -5,6 +5,7 @@ const test = require('node:test');
 const { GbaMemory } = require('../src/emulator/gba/memory');
 const { Arm7tdmi } = require('../src/emulator/gba/cpu');
 const { GbaPpu } = require('../src/emulator/gba/ppu');
+const { DuoGba } = require('../src/emulator/gba/gba');
 
 function romWithWords(words) {
   const rom = new Uint8Array(0x200);
@@ -19,6 +20,25 @@ test('barramento GBA mapeia ROM, EWRAM e VRAM', () => {
   assert.equal(memory.read32(0x02000000), 0xaabbccdd);
   memory.write16(0x06000000, 0x7fff);
   assert.equal(memory.read16(0x06000000), 0x7fff);
+});
+
+test('KEYINPUT inicia com todos os botões soltos', () => {
+  const memory = new GbaMemory(new Uint8Array()); assert.equal(memory.read16(0x04000130), 0x03ff);
+});
+
+test('registradores affine iniciam com matriz identidade, como após a BIOS', () => {
+  const memory = new GbaMemory(new Uint8Array());
+  assert.equal(memory.read16(0x04000020), 0x0100); assert.equal(memory.read16(0x04000026), 0x0100);
+  assert.equal(memory.read16(0x04000030), 0x0100); assert.equal(memory.read16(0x04000036), 0x0100);
+  memory.write16(0x04000020, 0); memory.registerRamReset(0x80); assert.equal(memory.read16(0x04000020), 0x0100);
+});
+
+test('save state restaura CPU, memória e botões', () => {
+  const gba = new DuoGba(new Uint8Array()); gba.cpu.r[3] = 123; gba.memory.write32(0x02000000, 0x12345678); gba.setButton('a', true); const state = gba.saveState(); gba.cpu.r[3] = 0; gba.memory.write32(0x02000000, 0); gba.setButton('a', false); gba.loadState(state); assert.equal(gba.cpu.r[3], 123); assert.equal(gba.memory.read32(0x02000000), 0x12345678); assert.equal(gba.memory.read16(0x04000130) & 1, 0);
+});
+
+test('um frame avança exatamente 280896 clocks do hardware', () => {
+  const gba = new DuoGba(new Uint8Array()); let hardwareCycles = 0; const tick = gba.memory.tick.bind(gba.memory); gba.memory.tick = (cycles) => { hardwareCycles += cycles; tick(cycles); }; gba.runFrame(false); assert.equal(hardwareCycles, 280896);
 });
 
 test('ARM7TDMI executa MOV, ADD e STR/LDR imediatos', () => {
@@ -111,6 +131,14 @@ test('BIOS CpuFastSet conta words e não multiplica o comprimento por oito', () 
   const memory = new GbaMemory(new Uint8Array()); const cpu = new Arm7tdmi(memory); for (let index = 0; index < 12; index++) memory.write32(0x02000000 + index * 4, index + 1); cpu.r[0] = 0x02000000; cpu.r[1] = 0x02000100; cpu.r[2] = 8; cpu.handleSwi(0x0c); assert.equal(memory.read32(0x0200011c), 8); assert.equal(memory.read32(0x02000120), 0);
 });
 
+test('BIOS BgAffineSet produz matriz identidade e origem ajustada', () => {
+  const memory = new GbaMemory(new Uint8Array()); const cpu = new Arm7tdmi(memory); memory.write32(0x02000000, 10 << 8); memory.write32(0x02000004, 20 << 8); memory.write16(0x02000008, 2); memory.write16(0x0200000a, 3); memory.write16(0x0200000c, 0x100); memory.write16(0x0200000e, 0x100); cpu.r[0] = 0x02000000; cpu.r[1] = 0x02000100; cpu.r[2] = 1; cpu.handleSwi(0x0e); assert.equal(memory.read16(0x02000100), 0x100); assert.equal(memory.read16(0x02000106), 0x100); assert.equal(memory.read32(0x02000108), 8 << 8); assert.equal(memory.read32(0x0200010c), 17 << 8);
+});
+
+test('BIOS BitUnPack expande pixels compactados e aplica offset', () => {
+  const memory = new GbaMemory(new Uint8Array()); const cpu = new Arm7tdmi(memory); memory.write8(0x02000000, 0b11100100); memory.write16(0x02000010, 1); memory.write8(0x02000012, 2); memory.write8(0x02000013, 8); memory.write32(0x02000014, 1); cpu.r[0] = 0x02000000; cpu.r[1] = 0x02000100; cpu.r[2] = 0x02000010; cpu.handleSwi(0x10); assert.deepEqual(Array.from(memory.ewram.slice(0x100, 0x104)), [0, 2, 3, 4]);
+});
+
 test('LDR literal Thumb usa PC+4 alinhado em quatro bytes', () => {
   const rom = new Uint8Array(0x40); rom[0] = 0x00; rom[1] = 0x48; rom[4] = 0x78; rom[5] = 0x56; rom[6] = 0x34; rom[7] = 0x12;
   const cpu = new Arm7tdmi(new GbaMemory(rom)); cpu.thumb = true; cpu.step(); assert.equal(cpu.r[0], 0x12345678);
@@ -195,6 +223,10 @@ test('PPU respeita máscara de janela e brilho do GBA', () => {
   assert.equal(ppu.render()[0] >>> 0, ppu.color15(0) >>> 0);
 });
 
+test('PPU usa a metade OBJ da paleta para sprites', () => {
+  const memory = new GbaMemory(new Uint8Array()); const ppu = new GbaPpu(memory); memory.write16(0x04000000, 0x1040); memory.write16(0x07000000, 0); memory.write16(0x07000002, 0); memory.write16(0x07000004, 0); memory.write8(0x06010000, 1); memory.write16(0x05000002, 0x001f); memory.write16(0x05000202, 0x7c00); assert.equal(ppu.render()[0], ppu.color15(0x7c00));
+});
+
 test('ROM ARM mínima executa escrita de vídeo pelo barramento', () => {
   const words = [0xe59f0018, 0xe3a01003, 0xe5801000, 0xe59f2010, 0xe3a0301f, 0xe5823000, 0xeafffffe, 0, 0x04000000, 0x06000000];
   const memory = new GbaMemory(romWithWords(words));
@@ -219,6 +251,10 @@ test('DMA imediato copia palavras para VRAM e VCOUNT avança por scanline', () =
 test('DMA inicia quando contagem e controle são escritos juntos em 32 bits', () => {
   const memory = new GbaMemory(new Uint8Array(0x40)); memory.write32(0x02000000, 0x89abcdef); memory.write32(0x040000d4, 0x02000000); memory.write32(0x040000d8, 0x03000000); memory.write32(0x040000dc, 0x84000001);
   assert.equal(memory.read32(0x03000000), 0x89abcdef);
+});
+
+test('DMA3 inicia ao escrever controle de 16 bits em 0x040000DE', () => {
+  const memory = new GbaMemory(new Uint8Array()); memory.write32(0x02000000, 0x76543210); memory.write32(0x040000d4, 0x02000000); memory.write32(0x040000d8, 0x06000000); memory.write16(0x040000dc, 1); memory.write16(0x040000de, 0x8400); assert.equal(memory.read32(0x06000000), 0x76543210);
 });
 
 test('Flash 1M identifica, grava e troca bancos de 64 KiB', () => {

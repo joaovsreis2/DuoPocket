@@ -31,8 +31,19 @@ class GbaMemory {
     this.scanline = 0;
     this.timerRemainder = [0, 0, 0, 0];
     this.timerReload = [0, 0, 0, 0];
-    this.io[0x00] = 0x00; // estado inicial do LCD; a ROM escolhe o modo gráfico
-    this.io[0x30] = 0xff; this.io[0x31] = 0x03; // KEYINPUT: botões soltos
+    this.videoRevision = 0;
+    this.initializeIoDefaults();
+  }
+
+  initializeIoDefaults() {
+    this.io.fill(0);
+    // A BIOS deixa as matrizes affine em identidade. Jogos comerciais, incluindo
+    // FireRed, dependem desse estado após RegisterRamReset em vez de regravar PA/PD.
+    this.writeIo16(0x04000020, 0x0100); this.writeIo16(0x04000026, 0x0100);
+    this.writeIo16(0x04000030, 0x0100); this.writeIo16(0x04000036, 0x0100);
+    this.writeIo16(0x04000088, 0x0200); // SOUNDBIAS
+    this.writeIo16(0x04000130, 0x03ff); // KEYINPUT: botões soltos
+    this.writeIo16(0x04000134, 0x8000); // RCNT
   }
 
   region(address) {
@@ -75,12 +86,13 @@ class GbaMemory {
     const byte = value & 0xff;
     if (a >= 0x0e000000 && a < 0x0e010000) { this.writeFlash(a - 0x0e000000, byte); return; }
     if (a >= REGION.ROM) return;
+    const videoWrite = (bytes, offset) => { if (bytes[offset] !== byte) { bytes[offset] = byte; this.videoRevision++; } };
     if (a >= REGION.EWRAM && a < REGION.EWRAM + 0x40000) this.ewram[a - REGION.EWRAM] = byte;
     else if (a >= REGION.IWRAM && a < REGION.IWRAM + 0x8000) this.iwram[a - REGION.IWRAM] = byte;
-    else if (a >= REGION.IO && a < REGION.IO + 0x400) this.io[a - REGION.IO] = byte;
-    else if (a >= REGION.PAL && a < REGION.PAL + 0x400) this.palette[a - REGION.PAL] = byte;
-    else if (a >= REGION.VRAM && a < REGION.VRAM + 0x18000) this.vram[a - REGION.VRAM] = byte;
-    else if (a >= REGION.OAM && a < REGION.OAM + 0x400) this.oam[a - REGION.OAM] = byte;
+    else if (a >= REGION.IO && a < REGION.IO + 0x400) { const offset = a - REGION.IO; if (offset === 0 || (offset >= 8 && offset < 0x56)) videoWrite(this.io, offset); else this.io[offset] = byte; }
+    else if (a >= REGION.PAL && a < REGION.PAL + 0x400) videoWrite(this.palette, a - REGION.PAL);
+    else if (a >= REGION.VRAM && a < REGION.VRAM + 0x18000) videoWrite(this.vram, a - REGION.VRAM);
+    else if (a >= REGION.OAM && a < REGION.OAM + 0x400) videoWrite(this.oam, a - REGION.OAM);
   }
 
   writeFlash(offset, value) {
@@ -115,7 +127,7 @@ class GbaMemory {
     this.write8(a, value); this.write8(a + 1, value >>> 8);
     if (timerData) this.timerReload[(a - 0x04000100) >> 2] = value & 0xffff;
     if (timerControl && !(oldControl & 0x80) && (value & 0x80)) { const index = (a - 0x04000102) >> 2; this.writeIo16(a - 2, this.timerReload[index]); this.timerRemainder[index] = 0; }
-    if (a >= 0x040000ba && a <= 0x040000dc && ((a - 0x040000b0) % 12) === 10) this.performDma(Math.floor((a - 0x040000b0) / 12));
+    if (a >= 0x040000ba && a <= 0x040000de && ((a - 0x040000b0) % 12) === 10) this.performDma(Math.floor((a - 0x040000b0) / 12));
   }
 
   write32(address, value) {
@@ -183,10 +195,10 @@ class GbaMemory {
   registerRamReset(mask) {
     if (mask & 0x01) this.ewram.fill(0);
     if (mask & 0x02) this.iwram.fill(0);
-    if (mask & 0x04) this.palette.fill(0);
-    if (mask & 0x08) this.vram.fill(0);
-    if (mask & 0x10) this.oam.fill(0);
-    if (mask & 0xe0) { const keys = this.read16(0x04000130); this.io.fill(0); this.writeIo16(0x04000130, keys || 0x03ff); }
+    if (mask & 0x04) { this.palette.fill(0); this.videoRevision++; }
+    if (mask & 0x08) { this.vram.fill(0); this.videoRevision++; }
+    if (mask & 0x10) { this.oam.fill(0); this.videoRevision++; }
+    if (mask & 0xe0) { const keys = this.read16(0x04000130); this.initializeIoDefaults(); this.writeIo16(0x04000130, keys || 0x03ff); }
   }
 
   readPalette(index) {
