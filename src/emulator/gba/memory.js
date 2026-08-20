@@ -29,7 +29,7 @@ class GbaMemory {
     this.scanlineCycles = 0;
     this.scanline = 0;
     this.timerRemainder = [0, 0, 0, 0];
-    this.io[0x00] = 0x03; // modo 3 por defeito para homebrew gráfico simples
+    this.io[0x00] = 0x00; // estado inicial do LCD; a ROM escolhe o modo gráfico
     this.io[0x30] = 0xff; this.io[0x31] = 0x03; // KEYINPUT: botões soltos
   }
 
@@ -71,6 +71,7 @@ class GbaMemory {
 
   write16(address, value) {
     const a = address & ~1;
+    if (a === 0x04000202) { this.writeIo16(a, this.read16(a) & ~(value & 0x3fff)); return; }
     this.write8(a, value); this.write8(a + 1, value >>> 8);
     if (a >= 0x040000ba && a <= 0x040000dc && ((a - 0x040000b0) % 12) === 10) this.performDma(Math.floor((a - 0x040000b0) / 12));
   }
@@ -78,6 +79,7 @@ class GbaMemory {
   write32(address, value) {
     const a = address & ~3;
     this.write8(a, value); this.write8(a + 1, value >>> 8); this.write8(a + 2, value >>> 16); this.write8(a + 3, value >>> 24);
+    if (a >= 0x040000b8 && a <= 0x040000dc && ((a - 0x040000b8) % 12) === 0) this.performDma(Math.floor((a - 0x040000b8) / 12));
   }
 
   tick(cycles) {
@@ -90,6 +92,8 @@ class GbaMemory {
       const vblank = this.scanline >= 160;
       const hblank = 0;
       this.writeIo16(0x04000004, displayStatus | (vblank ? 1 : 0) | hblank);
+      if (this.scanline === 160) for (let channel = 0; channel < 4; channel++) this.performDma(channel, 1);
+      if (this.scanline === 160 && (displayStatus & 0x0008)) this.writeIo16(0x04000202, this.read16(0x04000202) | 0x0001);
     }
     for (let index = 0; index < 4; index++) {
       const base = 0x100 + index * 4; const control = this.read16(0x04000102 + index * 4); if (!(control & 0x80)) continue;
@@ -105,18 +109,19 @@ class GbaMemory {
     this.io[offset] = value & 0xff; this.io[offset + 1] = (value >>> 8) & 0xff;
   }
 
-  performDma(channel) {
+  performDma(channel, trigger = 0) {
     if (channel < 0 || channel > 3) return;
     const base = 0x040000b0 + channel * 12;
     const source = this.read32(base); const destination = this.read32(base + 4); const control = this.read16(base + 10);
-    if (!(control & 0x8000) || ((control >>> 12) & 3) !== 0) return;
+    const timing = (control >>> 12) & 3;
+    if (!(control & 0x8000) || timing !== trigger) return;
     const max = channel === 3 ? 0x10000 : 0x4000; const count = this.read16(base + 8) || max; const width = control & 0x0400 ? 4 : 2; const sourceMode = (control >>> 7) & 3; const destinationMode = (control >>> 5) & 3; let src = source; let dst = destination;
     for (let i = 0; i < count; i++) {
       if (width === 4) this.write32(dst, this.read32(src)); else this.write16(dst, this.read16(src));
       if (sourceMode !== 2) src = (src + (sourceMode === 1 ? -width : width)) >>> 0;
       if (destinationMode !== 2) dst = (dst + (destinationMode === 1 ? -width : width)) >>> 0;
     }
-    if (!(control & 0x0200)) this.writeIo16(base + 10, control & 0x7fff);
+    if (!(control & 0x0200) || timing === 0) this.writeIo16(base + 10, control & 0x7fff);
   }
 
   setButtons(mask) {
@@ -126,6 +131,17 @@ class GbaMemory {
   }
 
   getSave() { return Uint8Array.from(this.sram); }
+
+  pendingInterrupt() { return Boolean((this.read16(0x04000208) & 1) && (this.read16(0x04000200) & this.read16(0x04000202))); }
+
+  registerRamReset(mask) {
+    if (mask & 0x01) this.ewram.fill(0);
+    if (mask & 0x02) this.iwram.fill(0);
+    if (mask & 0x04) this.palette.fill(0);
+    if (mask & 0x08) this.vram.fill(0);
+    if (mask & 0x10) this.oam.fill(0);
+    if (mask & 0xe0) { const keys = this.read16(0x04000130); this.io.fill(0); this.writeIo16(0x04000130, keys || 0x03ff); }
+  }
 
   readPalette(index) {
     return little16(this.palette, (index & 0x1ff) * 2);

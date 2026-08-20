@@ -6,7 +6,7 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 
 function smokeRom() {
   const rom = Buffer.alloc(0x80);
-  const words = [0xe59f0018, 0xe3a01003, 0xe58d1000, 0xe59f2010, 0xe3a0301f, 0xe5823000, 0xeafffffe, 0, 0x04000000, 0x06000000];
+  const words = [0xe59f0018, 0xe3a01003, 0xe5801000, 0xe59f2010, 0xe3a0301f, 0xe5823000, 0xeafffffe, 0, 0x04000000, 0x06000000];
   words.forEach((word, index) => rom.writeUInt32LE(word >>> 0, index * 4));
   return rom;
 }

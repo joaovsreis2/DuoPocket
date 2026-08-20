@@ -27,12 +27,14 @@ class GbaPpu {
   }
 
   renderMode0() {
+    const displayControl = this.memory.read16(0x04000000);
     const bg = [];
     for (let n = 0; n < 4; n++) bg.push(this.memory.read16(0x04000008 + n * 2));
     for (let y = 0; y < 160; y++) for (let x = 0; x < 240; x++) {
       let best = 4; let color = this.memory.readPalette(0);
       for (let n = 0; n < 4; n++) {
-        const control = bg[n]; if (control & 0x80 && n > 1) continue;
+        if (!(displayControl & (0x0100 << n))) continue;
+        const control = bg[n];
         const pixel = this.bgPixel(n, control, x, y); if (!pixel || (control & 3) > best) continue;
         best = control & 3; color = pixel;
       }
@@ -43,12 +45,12 @@ class GbaPpu {
   }
 
   bgPixel(index, control, x, y) {
-    const size = [256, 512, 512, 1024][(control >>> 14) & 3];
+    const dimensions = [[256, 256], [512, 256], [256, 512], [512, 512]][(control >>> 14) & 3];
     const scrollX = this.memory.read16(0x04000010 + index * 4); const scrollY = this.memory.read16(0x04000012 + index * 4);
-    const worldX = (x + scrollX) % size; const worldY = (y + scrollY) % size;
+    const worldX = (x + scrollX) % dimensions[0]; const worldY = (y + scrollY) % dimensions[1];
     const mapBase = ((control >>> 8) & 31) * 0x800; const charBase = ((control >>> 2) & 3) * 0x4000; const color8 = Boolean(control & 0x80);
-    const mapWidth = size / 32; const tileX = worldX >>> 3; const tileY = worldY >>> 3;
-    const entry = this.memory.read16(0x06000000 + mapBase + ((tileY * mapWidth + tileX) * 2)); const tile = entry & 0x3ff;
+    const tileX = worldX >>> 3; const tileY = worldY >>> 3; const screenBlock = (tileX >>> 5) + (tileY >>> 5) * (dimensions[0] >>> 8); const mapIndex = ((tileY & 31) * 32 + (tileX & 31)) * 2;
+    const entry = this.memory.read16(0x06000000 + mapBase + screenBlock * 0x800 + mapIndex); const tile = entry & 0x3ff;
     const px = (entry & 0x4000) ? 7 - (worldX & 7) : (worldX & 7); const py = (entry & 0x8000) ? 7 - (worldY & 7) : (worldY & 7); let paletteIndex;
     if (color8) { paletteIndex = this.memory.read8(0x06000000 + charBase + tile * 64 + py * 8 + px); if (!paletteIndex) return 0; }
     else { const packed = this.memory.read8(0x06000000 + charBase + tile * 32 + py * 4 + (px >>> 1)); const nibble = (px & 1) ? packed >>> 4 : packed & 15; if (!nibble) return 0; paletteIndex = nibble + ((entry >>> 12) & 15) * 16; }
