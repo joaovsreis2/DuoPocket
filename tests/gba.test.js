@@ -47,6 +47,13 @@ test('BX preserva corretamente o estado ARM ou Thumb do destino', () => {
   assert.equal(cpu.r[15], 0x08000020); assert.equal(cpu.thumb, true);
 });
 
+test('STMDB/LDMIA atualiza a pilha com a ordem correta', () => {
+  const memory = new GbaMemory(romWithWords([0xe92d0003, 0xe8bd0003]));
+  const cpu = new Arm7tdmi(memory); cpu.r[13] = 0x02000020; cpu.r[0] = 0x11111111; cpu.r[1] = 0x22222222;
+  cpu.step(); assert.equal(cpu.r[13], 0x02000018); assert.equal(memory.read32(0x02000018), 0x11111111); assert.equal(memory.read32(0x0200001c), 0x22222222);
+  cpu.r[0] = 0; cpu.r[1] = 0; cpu.step(); assert.equal(cpu.r[0], 0x11111111); assert.equal(cpu.r[1], 0x22222222); assert.equal(cpu.r[13], 0x02000020);
+});
+
 test('PPU desenha um pixel no modo 3', () => {
   const memory = new GbaMemory(new Uint8Array(0x40));
   memory.write16(0x04000000, 3);

@@ -189,14 +189,17 @@ class Arm7tdmi {
 
   armBlockTransfer(instr) {
     const l = (instr >>> 20) & 1; const w = (instr >>> 21) & 1; const u = (instr >>> 23) & 1; const p = (instr >>> 24) & 1;
-    const rn = (instr >>> 16) & 15; let address = this.r[rn]; const regs = [];
+    const rn = (instr >>> 16) & 15; const base = this.r[rn] >>> 0; let address; const regs = [];
     for (let i = 0; i < 16; i++) if (instr & (1 << i)) regs.push(i);
-    if (u && p) address += 4; else if (!u && !p) address -= regs.length * 4;
+    let step = 4;
+    if (u) address = U32(base + (p ? 4 : 0));
+    else if (p) address = U32(base - regs.length * 4), step = 4;
+    else address = U32(base - 4), step = -4;
     for (const reg of regs) {
       if (l) this.r[reg] = this.memory.read32(address); else this.memory.write32(address, this.r[reg]);
-      address = u ? U32(address + 4) : U32(address - 4);
+      address = U32(address + step);
     }
-    if (w) this.r[rn] = u ? U32(this.r[rn] + regs.length * 4) : U32(this.r[rn] - regs.length * 4);
+    if (w) this.r[rn] = u ? U32(base + regs.length * 4) : U32(base - regs.length * 4);
     this.cycles += 1 + regs.length;
   }
 
