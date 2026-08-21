@@ -19,9 +19,11 @@ async function selectedRom() {
 app.whenReady().then(async () => {
   const rom = await selectedRom();
   ipcMain.handle('game:rom', () => ({ rom, save: null }));
+  ipcMain.handle('game:save', () => ({ ok: true }));
   const root = path.resolve(__dirname, '..');
-  const window = new BrowserWindow({ width: 940, height: 720, show: false, backgroundColor: '#171922', webPreferences: { preload: path.join(root, 'src', 'main', 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
+  const window = new BrowserWindow({ width: 940, height: 720, show: process.env.DUOPOCKET_SHOW === '1', backgroundColor: '#171922', webPreferences: { preload: path.join(root, 'src', 'main', 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
   await window.loadFile(path.join(root, 'src', 'renderer', 'gba.html'));
+  if (process.env.DUOPOCKET_SPEED) await window.webContents.executeJavaScript(`document.querySelector('#speed').value = ${JSON.stringify(process.env.DUOPOCKET_SPEED)}; document.querySelector('#speed').dispatchEvent(new Event('change'))`);
   const wait = Number(process.env.DUOPOCKET_CAPTURE_WAIT || 800);
   if (process.env.DUOPOCKET_PRESS_START) {
     const pressAt = Math.min(Number(process.env.DUOPOCKET_PRESS_AT || 5000), wait);
@@ -33,7 +35,8 @@ app.whenReady().then(async () => {
   const output = path.join(root, 'artifacts', process.env.DUOPOCKET_TEST_ROM ? 'gba-real-rom.png' : 'gba-core.png');
   await fs.mkdir(path.dirname(output), { recursive: true });
   await fs.writeFile(output, image.toPNG());
-  process.stdout.write(`${output}\n`);
+  const status = await window.webContents.executeJavaScript("document.querySelector('#status').textContent");
+  process.stdout.write(`${output}\n${status}\n`);
   app.quit();
 });
 

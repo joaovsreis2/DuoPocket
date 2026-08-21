@@ -14,6 +14,9 @@ const EMULATORS = Object.freeze({
 let mainWindow;
 let library;
 const gbaWindows = new Map();
+const gbaCloseReady = new WeakSet();
+const gbaCloseTimers = new WeakMap();
+const gbaSaveChains = new Map();
 
 function projectRoot() {
   return path.resolve(__dirname, '..', '..');
@@ -72,8 +75,8 @@ async function createWindow() {
   });
 
   const loadOptions = process.env.DUOPOCKET_CAPTURE === '1' ? { query: { demo: '1' } } : {};
-  await mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'), loadOptions);
   mainWindow.once('ready-to-show', () => mainWindow.show());
+  await mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'), loadOptions);
 }
 
 async function openGbaWindow(game) {
@@ -90,7 +93,15 @@ async function openGbaWindow(game) {
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true }
   });
   gbaWindows.set(game.id, gbaWindow);
-  gbaWindow.on('closed', () => gbaWindows.delete(game.id));
+  gbaWindow.on('close', (event) => {
+    if (gbaCloseReady.has(gbaWindow)) return;
+    event.preventDefault();
+    gbaWindow.webContents.send('game:before-close');
+    clearTimeout(gbaCloseTimers.get(gbaWindow));
+    const timer = setTimeout(() => { gbaCloseReady.add(gbaWindow); gbaWindow.close(); }, 2500);
+    gbaCloseTimers.set(gbaWindow, timer);
+  });
+  gbaWindow.on('closed', () => { clearTimeout(gbaCloseTimers.get(gbaWindow)); gbaWindows.delete(game.id); });
   await gbaWindow.loadFile(path.join(__dirname, '..', 'renderer', 'gba.html'));
   return gbaWindow;
 }
@@ -224,9 +235,22 @@ function registerIpc() {
       const game = [...gbaWindows.entries()].find(([, win]) => win.webContents.id === event.sender.id)?.[0];
       const entry = game ? library.get(game) : null;
       if (!entry || !bytes) return { ok: false };
-      await require('node:fs/promises').writeFile(`${entry.path}.sav`, Buffer.from(bytes));
+      const previous = gbaSaveChains.get(game) || Promise.resolve();
+      const write = previous.catch(() => {}).then(() => require('node:fs/promises').writeFile(`${entry.path}.sav`, Buffer.from(bytes)));
+      gbaSaveChains.set(game, write);
+      await write;
+      if (gbaSaveChains.get(game) === write) gbaSaveChains.delete(game);
       return { ok: true };
     } catch (error) { return replyError(error); }
+  });
+
+  ipcMain.handle('game:close-ready', (event) => {
+    const window = [...gbaWindows.values()].find((candidate) => candidate.webContents.id === event.sender.id);
+    if (!window) return { ok: false };
+    clearTimeout(gbaCloseTimers.get(window));
+    gbaCloseReady.add(window);
+    window.close();
+    return { ok: true };
   });
 }
 

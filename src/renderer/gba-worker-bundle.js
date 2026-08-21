@@ -40,6 +40,15 @@
           this.scanline = 0;
           this.timerRemainder = [0, 0, 0, 0];
           this.timerReload = [0, 0, 0, 0];
+          this.dmaSource = [0, 0, 0, 0];
+          this.dmaDestination = [0, 0, 0, 0];
+          this.dmaInitialDestination = [0, 0, 0, 0];
+          this.dmaEnabled = [false, false, false, false];
+          this.audioFifos = Array.from({ length: 2 }, () => ({ data: new Int8Array(32), head: 0, length: 0 }));
+          this.directSound = [0, 0];
+          this.audioCycleRemainder = 0;
+          this.audioSamples = new Int16Array(32768 * 2);
+          this.audioFrameCount = 0;
           this.videoRevision = 0;
           this.initializeIoDefaults();
         }
@@ -55,26 +64,34 @@
         }
         region(address) {
           const a = address >>> 0;
-          if (a >= REGION.EWRAM && a < REGION.EWRAM + 262144) return [this.ewram, a - REGION.EWRAM];
-          if (a >= REGION.IWRAM && a < REGION.IWRAM + 32768) return [this.iwram, a - REGION.IWRAM];
+          if (a >= REGION.EWRAM && a < REGION.IWRAM) return [this.ewram, a - REGION.EWRAM & 262143];
+          if (a >= REGION.IWRAM && a < REGION.IO) return [this.iwram, a - REGION.IWRAM & 32767];
           if (a >= REGION.IO && a < REGION.IO + 1024) return [this.io, a - REGION.IO];
-          if (a >= REGION.PAL && a < REGION.PAL + 1024) return [this.palette, a - REGION.PAL];
-          if (a >= REGION.VRAM && a < REGION.VRAM + 98304) return [this.vram, a - REGION.VRAM];
-          if (a >= REGION.OAM && a < REGION.OAM + 1024) return [this.oam, a - REGION.OAM];
-          if (a >= 234881024 && a < 234946560) return [this.sram, a - 234881024];
+          if (a >= REGION.PAL && a < REGION.VRAM) return [this.palette, a - REGION.PAL & 1023];
+          if (a >= REGION.VRAM && a < REGION.OAM) {
+            let offset = a - REGION.VRAM & 131071;
+            if (offset >= 98304) offset -= 32768;
+            return [this.vram, offset];
+          }
+          if (a >= REGION.OAM && a < REGION.ROM) return [this.oam, a - REGION.OAM & 1023];
+          if (a >= 234881024 && a < 268435456) return [this.sram, a - 234881024 & 65535];
           return null;
         }
         read8(address) {
           const a = address >>> 0;
           if (a >= REGION.ROM && a < 234881024 && this.rom.length) return this.rom[(a - REGION.ROM) % this.rom.length];
-          if (a >= REGION.EWRAM && a < REGION.EWRAM + 262144) return this.ewram[a - REGION.EWRAM];
-          if (a >= REGION.IWRAM && a < REGION.IWRAM + 32768) return this.iwram[a - REGION.IWRAM];
+          if (a >= REGION.EWRAM && a < REGION.IWRAM) return this.ewram[a - REGION.EWRAM & 262143];
+          if (a >= REGION.IWRAM && a < REGION.IO) return this.iwram[a - REGION.IWRAM & 32767];
           if (a >= REGION.IO && a < REGION.IO + 1024) return this.io[a - REGION.IO];
-          if (a >= REGION.PAL && a < REGION.PAL + 1024) return this.palette[a - REGION.PAL];
-          if (a >= REGION.VRAM && a < REGION.VRAM + 98304) return this.vram[a - REGION.VRAM];
-          if (a >= REGION.OAM && a < REGION.OAM + 1024) return this.oam[a - REGION.OAM];
-          if (a >= 234881024 && a < 234946560) {
-            const offset = a - 234881024;
+          if (a >= REGION.PAL && a < REGION.VRAM) return this.palette[a - REGION.PAL & 1023];
+          if (a >= REGION.VRAM && a < REGION.OAM) {
+            let offset = a - REGION.VRAM & 131071;
+            if (offset >= 98304) offset -= 32768;
+            return this.vram[offset];
+          }
+          if (a >= REGION.OAM && a < REGION.ROM) return this.oam[a - REGION.OAM & 1023];
+          if (a >= 234881024 && a < 268435456) {
+            const offset = a - 234881024 & 65535;
             if (this.flashIdMode && offset < 2) return offset ? 19 : 98;
             return this.sram[this.flashBank * 65536 + offset];
           }
@@ -82,17 +99,62 @@
         }
         read16(address) {
           const a = address & ~1;
+          if (a >= REGION.ROM && a < 234881024 && this.rom.length) {
+            const offset = (a - REGION.ROM) % this.rom.length;
+            return this.rom[offset] | this.rom[(offset + 1) % this.rom.length] << 8;
+          }
+          if (a >= REGION.EWRAM && a < REGION.IWRAM) return little16(this.ewram, a - REGION.EWRAM & 262143);
+          if (a >= REGION.IWRAM && a < REGION.IO) return little16(this.iwram, a - REGION.IWRAM & 32767);
+          if (a >= REGION.IO && a < REGION.IO + 1024) return little16(this.io, a - REGION.IO);
+          if (a >= REGION.PAL && a < REGION.VRAM) return little16(this.palette, a - REGION.PAL & 1023);
+          if (a >= REGION.VRAM && a < REGION.OAM) {
+            let offset = a - REGION.VRAM & 131071;
+            if (offset >= 98304) offset -= 32768;
+            return little16(this.vram, offset);
+          }
+          if (a >= REGION.OAM && a < REGION.ROM) return little16(this.oam, a - REGION.OAM & 1023);
           return this.read8(a) | this.read8(a + 1) << 8;
         }
         read32(address) {
           const a = address & ~3;
-          return (this.read8(a) | this.read8(a + 1) << 8 | this.read8(a + 2) << 16 | this.read8(a + 3) << 24) >>> 0;
+          let bytes;
+          let offset;
+          if (a >= REGION.ROM && a < 234881024 && this.rom.length) {
+            bytes = this.rom;
+            offset = (a - REGION.ROM) % bytes.length;
+            if (offset + 3 >= bytes.length) return (this.read16(a) | this.read16(a + 2) << 16) >>> 0;
+          } else if (a >= REGION.EWRAM && a < REGION.IWRAM) {
+            bytes = this.ewram;
+            offset = a - REGION.EWRAM & 262143;
+          } else if (a >= REGION.IWRAM && a < REGION.IO) {
+            bytes = this.iwram;
+            offset = a - REGION.IWRAM & 32767;
+          } else if (a >= REGION.IO && a < REGION.IO + 1024) {
+            bytes = this.io;
+            offset = a - REGION.IO;
+          } else if (a >= REGION.PAL && a < REGION.VRAM) {
+            bytes = this.palette;
+            offset = a - REGION.PAL & 1023;
+          } else if (a >= REGION.VRAM && a < REGION.OAM) {
+            bytes = this.vram;
+            offset = a - REGION.VRAM & 131071;
+            if (offset >= 98304) offset -= 32768;
+          } else if (a >= REGION.OAM && a < REGION.ROM) {
+            bytes = this.oam;
+            offset = a - REGION.OAM & 1023;
+          }
+          if (bytes) return (bytes[offset] | bytes[offset + 1] << 8 | bytes[offset + 2] << 16 | bytes[offset + 3] << 24) >>> 0;
+          return (this.read16(a) | this.read16(a + 2) << 16) >>> 0;
         }
         write8(address, value) {
           const a = address >>> 0;
           const byte = value & 255;
-          if (a >= 234881024 && a < 234946560) {
-            this.writeFlash(a - 234881024, byte);
+          if (a >= 67109024 && a < 67109032) {
+            this.pushAudioFifo(a < 67109028 ? 0 : 1, byte);
+            return;
+          }
+          if (a >= 234881024 && a < 268435456) {
+            this.writeFlash(a - 234881024 & 65535, byte);
             return;
           }
           if (a >= REGION.ROM) return;
@@ -102,15 +164,18 @@
               this.videoRevision++;
             }
           };
-          if (a >= REGION.EWRAM && a < REGION.EWRAM + 262144) this.ewram[a - REGION.EWRAM] = byte;
-          else if (a >= REGION.IWRAM && a < REGION.IWRAM + 32768) this.iwram[a - REGION.IWRAM] = byte;
+          if (a >= REGION.EWRAM && a < REGION.IWRAM) this.ewram[a - REGION.EWRAM & 262143] = byte;
+          else if (a >= REGION.IWRAM && a < REGION.IO) this.iwram[a - REGION.IWRAM & 32767] = byte;
           else if (a >= REGION.IO && a < REGION.IO + 1024) {
             const offset = a - REGION.IO;
-            if (offset === 0 || offset >= 8 && offset < 86) videoWrite(this.io, offset);
+            if (offset < 2 || offset >= 8 && offset < 86) videoWrite(this.io, offset);
             else this.io[offset] = byte;
-          } else if (a >= REGION.PAL && a < REGION.PAL + 1024) videoWrite(this.palette, a - REGION.PAL);
-          else if (a >= REGION.VRAM && a < REGION.VRAM + 98304) videoWrite(this.vram, a - REGION.VRAM);
-          else if (a >= REGION.OAM && a < REGION.OAM + 1024) videoWrite(this.oam, a - REGION.OAM);
+          } else if (a >= REGION.PAL && a < REGION.VRAM) videoWrite(this.palette, a - REGION.PAL & 1023);
+          else if (a >= REGION.VRAM && a < REGION.OAM) {
+            let offset = a - REGION.VRAM & 131071;
+            if (offset >= 98304) offset -= 32768;
+            videoWrite(this.vram, offset);
+          } else if (a >= REGION.OAM && a < REGION.ROM) videoWrite(this.oam, a - REGION.OAM & 1023);
         }
         writeFlash(offset, value) {
           if (value === 240) {
@@ -170,7 +235,8 @@
           }
           const timerData = a >= 67109120 && a <= 67109132 && (a - 67109120) % 4 === 0;
           const timerControl = a >= 67109122 && a <= 67109134 && (a - 67109122) % 4 === 0;
-          const oldControl = timerControl ? this.read16(a) : 0;
+          const dmaControl = a >= 67109050 && a <= 67109086 && (a - 67109040) % 12 === 10;
+          const oldControl = timerControl || dmaControl ? this.read16(a) : 0;
           this.write8(a, value);
           this.write8(a + 1, value >>> 8);
           if (timerData) this.timerReload[a - 67109120 >> 2] = value & 65535;
@@ -179,15 +245,19 @@
             this.writeIo16(a - 2, this.timerReload[index]);
             this.timerRemainder[index] = 0;
           }
-          if (a >= 67109050 && a <= 67109086 && (a - 67109040) % 12 === 10) this.performDma(Math.floor((a - 67109040) / 12));
+          if (a === 67108994) this.applySoundControl(value);
+          if (dmaControl) this.updateDmaControl(Math.floor((a - 67109040) / 12), oldControl, value);
         }
         write32(address, value) {
           const a = address & ~3;
+          const dmaControlWrite = a >= 67109048 && a <= 67109084 && (a - 67109048) % 12 === 0;
+          const oldControl = dmaControlWrite ? this.read16(a + 2) : 0;
           this.write8(a, value);
           this.write8(a + 1, value >>> 8);
           this.write8(a + 2, value >>> 16);
           this.write8(a + 3, value >>> 24);
-          if (a >= 67109048 && a <= 67109084 && (a - 67109048) % 12 === 0) this.performDma(Math.floor((a - 67109048) / 12));
+          if (a === 67108992) this.applySoundControl(value >>> 16);
+          if (dmaControlWrite) this.updateDmaControl(Math.floor((a - 67109048) / 12), oldControl, value >>> 16);
         }
         tick(cycles) {
           this.scanlineCycles += cycles;
@@ -195,7 +265,7 @@
             this.scanlineCycles -= 1232;
             this.scanline = (this.scanline + 1) % 228;
             this.io[6] = this.scanline;
-            const displayStatus = this.read16(67108868) & ~3;
+            const displayStatus = little16(this.io, 4) & ~3;
             const vblank = this.scanline >= 160;
             const hblank = 0;
             this.writeIo16(67108868, displayStatus | (vblank ? 1 : 0) | hblank);
@@ -203,7 +273,7 @@
             if (this.scanline === 160 && displayStatus & 8) this.writeIo16(67109378, this.read16(67109378) | 1);
           }
           for (let index = 0; index < 4; index++) {
-            const control = this.read16(67109122 + index * 4);
+            const control = little16(this.io, 258 + index * 4);
             if (!(control & 128) || index && control & 4) continue;
             const divider = [1, 64, 256, 1024][control & 3];
             const total = this.timerRemainder[index] + cycles;
@@ -211,13 +281,15 @@
             this.timerRemainder[index] = total % divider;
             if (ticks) this.incrementTimer(index, ticks);
           }
+          this.generateAudio(cycles);
         }
         incrementTimer(index, ticks) {
           if (index > 3 || ticks <= 0) return;
           const address = 67109120 + index * 4;
-          const control = this.read16(address + 2);
+          const ioOffset = 256 + index * 4;
+          const control = little16(this.io, ioOffset + 2);
           if (!(control & 128)) return;
-          let value = this.read16(address);
+          let value = little16(this.io, ioOffset);
           let overflows = 0;
           while (ticks > 0) {
             const untilOverflow = 65536 - value;
@@ -231,13 +303,107 @@
             }
           }
           this.writeIo16(address, value);
-          if (overflows && control & 64) this.writeIo16(67109378, this.read16(67109378) | 1 << 3 + index);
-          if (overflows && index < 3 && (this.read16(address + 6) & 132) === 132) this.incrementTimer(index + 1, overflows);
+          if (overflows) this.clockAudioFifos(index, overflows);
+          if (overflows && control & 64) this.writeIo16(67109378, little16(this.io, 514) | 1 << 3 + index);
+          if (overflows && index < 3 && (little16(this.io, ioOffset + 6) & 132) === 132) this.incrementTimer(index + 1, overflows);
         }
         writeIo16(address, value) {
           const offset = address - REGION.IO & 1022;
           this.io[offset] = value & 255;
           this.io[offset + 1] = value >>> 8 & 255;
+        }
+        pushAudioFifo(index, value) {
+          const fifo = this.audioFifos[index];
+          if (fifo.length >= 32) return;
+          fifo.data[fifo.head + fifo.length & 31] = value << 24 >> 24;
+          fifo.length++;
+        }
+        resetAudioFifo(index) {
+          const fifo = this.audioFifos[index];
+          fifo.head = 0;
+          fifo.length = 0;
+          this.directSound[index] = 0;
+        }
+        applySoundControl(value) {
+          if (value & 2048) this.resetAudioFifo(0);
+          if (value & 32768) this.resetAudioFifo(1);
+          this.writeIo16(67108994, value & ~34816);
+          this.serviceAudioDma(0);
+          this.serviceAudioDma(1);
+        }
+        clockAudioFifos(timer2, overflows) {
+          const control = little16(this.io, 130);
+          for (let count = 0; count < overflows; count++) for (let index = 0; index < 2; index++) {
+            const selectedTimer = index ? control >>> 14 & 1 : control >>> 10 & 1;
+            if (selectedTimer !== timer2) continue;
+            const fifo = this.audioFifos[index];
+            if (fifo.length) {
+              this.directSound[index] = fifo.data[fifo.head];
+              fifo.head = fifo.head + 1 & 31;
+              fifo.length--;
+            } else this.directSound[index] = 0;
+            if (fifo.length <= 16) this.serviceAudioDma(index);
+          }
+        }
+        generateAudio(cycles) {
+          const master = little16(this.io, 132) & 128;
+          const control = little16(this.io, 130);
+          if (!master || !(control & 13056)) {
+            this.audioCycleRemainder = 0;
+            return;
+          }
+          const total = this.audioCycleRemainder + cycles;
+          const frames = Math.floor(total / 512);
+          this.audioCycleRemainder = total % 512;
+          if (!frames) return;
+          const volumeA = control & 4 ? 1 : 0.5;
+          const volumeB = control & 8 ? 1 : 0.5;
+          let left = 0;
+          let right = 0;
+          if (control & 512) left += this.directSound[0] * volumeA;
+          if (control & 256) right += this.directSound[0] * volumeA;
+          if (control & 8192) left += this.directSound[1] * volumeB;
+          if (control & 4096) right += this.directSound[1] * volumeB;
+          const leftSample = Math.max(-32768, Math.min(32767, Math.round(left * 128)));
+          const rightSample = Math.max(-32768, Math.min(32767, Math.round(right * 128)));
+          for (let frame = 0; frame < frames && this.audioFrameCount < 32768; frame++) {
+            const offset = this.audioFrameCount++ * 2;
+            this.audioSamples[offset] = leftSample;
+            this.audioSamples[offset + 1] = rightSample;
+          }
+        }
+        takeAudio() {
+          const samples = this.audioSamples.slice(0, this.audioFrameCount * 2);
+          this.audioFrameCount = 0;
+          return { sampleRate: 32768, samples };
+        }
+        updateDmaControl(channel, oldControl, newControl) {
+          if (!(newControl & 32768)) {
+            this.dmaEnabled[channel] = false;
+            return;
+          }
+          if (!(oldControl & 32768)) {
+            const base = 67109040 + channel * 12;
+            this.dmaSource[channel] = this.read32(base);
+            this.dmaDestination[channel] = this.read32(base + 4);
+            this.dmaInitialDestination[channel] = this.dmaDestination[channel];
+            this.dmaEnabled[channel] = true;
+            const timing = newControl >>> 12 & 3;
+            if (timing === 0) this.performDma(channel, 0);
+            else if (timing === 3) {
+              this.serviceAudioDma(0);
+              this.serviceAudioDma(1);
+            }
+          }
+        }
+        serviceAudioDma(index) {
+          const destination = index ? 67109028 : 67109024;
+          for (let channel = 1; channel <= 2; channel++) {
+            const base = 67109040 + channel * 12;
+            const control = this.read16(base + 10);
+            const configuredDestination = this.dmaEnabled[channel] ? this.dmaDestination[channel] : this.read32(base + 4);
+            if ((control & 45056) === 45056 && (configuredDestination & ~3) === destination) this.performDma(channel, 3);
+          }
         }
         performDma(channel, trigger = 0) {
           if (channel < 0 || channel > 3) return;
@@ -247,20 +413,33 @@
           const control = this.read16(base + 10);
           const timing = control >>> 12 & 3;
           if (!(control & 32768) || timing !== trigger) return;
+          if (!this.dmaEnabled[channel]) {
+            this.dmaSource[channel] = source;
+            this.dmaDestination[channel] = destination;
+            this.dmaInitialDestination[channel] = destination;
+            this.dmaEnabled[channel] = true;
+          }
+          const fifoTransfer = timing === 3 && channel < 3 && ((this.dmaDestination[channel] & ~3) === 67109024 || (this.dmaDestination[channel] & ~3) === 67109028);
           const max = channel === 3 ? 65536 : 16384;
-          const count = this.read16(base + 8) || max;
-          const width = control & 1024 ? 4 : 2;
+          const count = fifoTransfer ? 4 : this.read16(base + 8) || max;
+          const width = fifoTransfer ? 4 : control & 1024 ? 4 : 2;
           const sourceMode = control >>> 7 & 3;
-          const destinationMode = control >>> 5 & 3;
-          let src = source;
-          let dst = destination;
+          const destinationMode = fifoTransfer ? 2 : control >>> 5 & 3;
+          let src = this.dmaSource[channel];
+          let dst = this.dmaDestination[channel];
           for (let i = 0; i < count; i++) {
             if (width === 4) this.write32(dst, this.read32(src));
             else this.write16(dst, this.read16(src));
             if (sourceMode !== 2) src = src + (sourceMode === 1 ? -width : width) >>> 0;
             if (destinationMode !== 2) dst = dst + (destinationMode === 1 ? -width : width) >>> 0;
           }
-          if (!(control & 512) || timing === 0) this.writeIo16(base + 10, control & 32767);
+          this.dmaSource[channel] = src;
+          this.dmaDestination[channel] = destinationMode === 3 && control & 512 && timing !== 0 ? this.dmaInitialDestination[channel] : dst;
+          if (control & 16384) this.writeIo16(67109378, little16(this.io, 514) | 1 << 8 + channel);
+          if (!(control & 512) || timing === 0) {
+            this.writeIo16(base + 10, control & 32767);
+            this.dmaEnabled[channel] = false;
+          }
         }
         setButtons(mask) {
           const activeLow = ~mask & 1023;
@@ -271,7 +450,7 @@
           return Uint8Array.from(this.sram);
         }
         pendingInterrupt() {
-          return Boolean(this.read16(67109384) & 1 && this.read16(67109376) & this.read16(67109378));
+          return Boolean(little16(this.io, 520) & 1 && little16(this.io, 512) & little16(this.io, 514));
         }
         registerRamReset(mask) {
           if (mask & 1) this.ewram.fill(0);
@@ -1465,30 +1644,66 @@
           const backdrop = read16(palette, 0);
           const lut = this.colorLut;
           const oneDimensional = Boolean(displayControl & 64);
+          const alpha = read16(io, 82);
+          const eva = Math.min(16, alpha & 31);
+          const evb = Math.min(16, alpha >>> 8 & 31);
+          const blend = (first, second) => {
+            const red = Math.min(31, (first & 31) * eva + (second & 31) * evb >> 4);
+            const green = Math.min(31, (first >>> 5 & 31) * eva + (second >>> 5 & 31) * evb >> 4);
+            const blue = Math.min(31, (first >>> 10 & 31) * eva + (second >>> 10 & 31) * evb >> 4);
+            return red | green << 5 | blue << 10;
+          };
+          const before = (priority, rank, otherPriority, otherRank) => priority < otherPriority || priority === otherPriority && rank < otherRank;
           for (let y = 0; y < 160; y++) for (let x = 0; x < 240; x++) {
             const offset = y * 240 + x;
             const windowMask = windowMasks ? windowMasks[offset] : 63;
-            let best = 4;
-            let selectedLayer = 5;
-            let color = backdrop;
+            let topColor = backdrop;
+            let topLayer = 5;
+            let topPriority = 4;
+            let topRank = 6;
+            let secondColor = 0;
+            let secondLayer = -1;
+            let secondPriority = 5;
+            let secondRank = 7;
+            const insert = (color2, layer, priority, rank) => {
+              if (before(priority, rank, topPriority, topRank)) {
+                secondColor = topColor;
+                secondLayer = topLayer;
+                secondPriority = topPriority;
+                secondRank = topRank;
+                topColor = color2;
+                topLayer = layer;
+                topPriority = priority;
+                topRank = rank;
+              } else if (before(priority, rank, secondPriority, secondRank)) {
+                secondColor = color2;
+                secondLayer = layer;
+                secondPriority = priority;
+                secondRank = rank;
+              }
+            };
             for (let n = 0; n < 4; n++) {
               if (!(displayControl & 256 << n) || !(windowMask & 1 << n) || mode === 1 && n === 3 || mode === 2 && n < 2) continue;
               const isAffine = mode === 1 && n === 2 || mode === 2 && n >= 2;
               const pixel = isAffine ? affinePixel(n, x, y) : bgPixel(n, x, y);
-              if (pixel < 0 || bgInfo[n].priority >= best) continue;
-              best = bgInfo[n].priority;
-              selectedLayer = n;
-              color = pixel;
+              if (pixel >= 0) insert(pixel, n, bgInfo[n].priority, n + 1);
             }
+            let semiTransparentObject = false;
             const visibleSprites = spriteLines?.visible[y];
             if (visibleSprites?.length && windowMask & 16) {
-              const sprite = this.spritePixel(x, y, best, visibleSprites, oneDimensional);
+              const sprite = this.spriteSample(x, y, 4, visibleSprites, oneDimensional);
               if (sprite >= 0) {
-                color = sprite;
-                selectedLayer = 4;
+                const priority = sprite >>> 15 & 3;
+                const objectMode = sprite >>> 17 & 3;
+                insert(sprite & 32767, 4, priority, 0);
+                semiTransparentObject = topLayer === 4 && objectMode === 1;
               }
             }
-            if (windowMask & 32 && effect >= 2) color = applyBrightness(color, selectedLayer);
+            let color = topColor;
+            const effectsEnabled = Boolean(windowMask & 32);
+            const secondTarget = secondLayer >= 0 && Boolean(blendControl & 1 << 8 + secondLayer);
+            if (effectsEnabled && secondTarget && (semiTransparentObject || effect === 1 && blendControl & 1 << topLayer)) color = blend(topColor, secondColor);
+            else if (effectsEnabled && effect >= 2) color = applyBrightness(topColor, topLayer);
             this.frame[offset] = lut[color & 32767];
           }
           return this.frame;
@@ -1566,7 +1781,7 @@
             const sx = attr1 & 511;
             const sy = attr0 & 255;
             const box = affine && attr0 & 512 ? [dim[0] * 2, dim[1] * 2] : dim;
-            const sprite = { attr0, attr1, attr2, dim, box, affine, sx: sx >= 256 ? sx - 512 : sx, sy: sy >= 160 ? sy - 256 : sy };
+            const sprite = { attr0, attr1, attr2, objectMode, dim, box, affine, sx: sx >= 256 ? sx - 512 : sx, sy: sy >= 160 ? sy - 256 : sy };
             const target = objectMode === 2 ? lines.window : lines.visible;
             for (let y = Math.max(0, sprite.sy); y < Math.min(160, sprite.sy + box[1]); y++) target[y].push(sprite);
           }
@@ -1603,15 +1818,17 @@
           }
           return red | green << 5 | blue << 10;
         }
-        spritePixel(x, y, bgPriority, sprites, oneDimensional) {
+        spriteSample(x, y, bgPriority, sprites, oneDimensional) {
           const vram = this.memory.vram;
           const oam = this.memory.oam;
           const palette = this.memory.palette;
           const read16 = (bytes, offset) => bytes[offset] | bytes[offset + 1] << 8;
+          let selected = -1;
+          let selectedPriority = 4;
           for (const sprite of sprites) {
-            const { attr0, attr1, attr2, dim, box } = sprite;
+            const { attr0, attr1, attr2, objectMode, dim, box } = sprite;
             const priority = attr2 >>> 10 & 3;
-            if (priority > bgPriority) continue;
+            if (priority > bgPriority || priority >= selectedPriority) continue;
             let px = x - sprite.sx;
             let py = y - sprite.sy;
             if (px < 0 || py < 0 || px >= box[0] || py >= box[1]) continue;
@@ -1633,7 +1850,7 @@
               if (attr1 & 8192) py = dim[1] - 1 - py;
             }
             const color8 = Boolean(attr0 & 8192);
-            const tile = attr2 & 1023;
+            const tile = color8 ? attr2 & 1022 : attr2 & 1023;
             const tileX = px >>> 3;
             const tileY = py >>> 3;
             const factor = color8 ? 2 : 1;
@@ -1641,11 +1858,17 @@
             const tileNumber = tile + tileY * (oneDimensional ? tilesWide * factor : 32) + tileX * factor;
             const dataOffset = 65536 + tileNumber * 32 + (py & 7) * (color8 ? 8 : 4) + (color8 ? px & 7 : (px & 7) >>> 1);
             const data = vram[dataOffset];
-            const paletteIndex = color8 ? data : (data >>> (px & 1) * 4 & 15) + (attr2 >>> 12 & 15) * 16;
-            if (!paletteIndex) continue;
-            return read16(palette, (256 + paletteIndex) * 2);
+            const pixel = color8 ? data : data >>> (px & 1) * 4 & 15;
+            if (!pixel) continue;
+            const paletteIndex = color8 ? pixel : pixel + (attr2 >>> 12 & 15) * 16;
+            selected = read16(palette, (256 + paletteIndex) * 2) | priority << 15 | objectMode << 17;
+            selectedPriority = priority;
           }
-          return -1;
+          return selected;
+        }
+        spritePixel(x, y, bgPriority, sprites, oneDimensional) {
+          const sample = this.spriteSample(x, y, bgPriority, sprites, oneDimensional);
+          return sample < 0 ? -1 : sample & 32767;
         }
       };
       module.exports = { GbaPpu };
@@ -1668,6 +1891,8 @@
           this.frameCycles = 280896;
           this.pressedButtons = 0;
           this.paused = false;
+          this.idleRegisters = new Uint32Array(15);
+          this.idlePcs = new Uint32Array(9);
         }
         reset() {
           this.cpu.reset();
@@ -1677,13 +1902,28 @@
           if (this.paused) return this.ppu.frame;
           const target = this.cpu.cycles + Math.ceil(this.frameCycles / this.cpu.clockScale);
           while (this.cpu.cycles < target) {
-            const registers = Array.from(this.cpu.r.subarray(0, 15));
-            const pcs = /* @__PURE__ */ new Set();
+            const registers = this.idleRegisters;
+            const pcs = this.idlePcs;
+            let pcCount = 0;
+            for (let index = 0; index < 15; index++) registers[index] = this.cpu.r[index];
             for (let step = 0; step < 256 && this.cpu.cycles < target; step++) {
-              pcs.add(this.cpu.r[15] >>> 0);
+              if (pcCount < 9) {
+                const pc = this.cpu.r[15] >>> 0;
+                let known = false;
+                for (let index = 0; index < pcCount; index++) if (pcs[index] === pc) {
+                  known = true;
+                  break;
+                }
+                if (!known) pcs[pcCount++] = pc;
+              }
               this.cpu.step();
             }
-            const idle = pcs.size <= 8 && !this.memory.pendingInterrupt() && registers.every((value, index) => value === this.cpu.r[index]);
+            let unchanged = true;
+            for (let index = 0; index < 15; index++) if (registers[index] !== this.cpu.r[index]) {
+              unchanged = false;
+              break;
+            }
+            const idle = pcCount <= 8 && !this.memory.pendingInterrupt() && unchanged;
             if (idle && this.cpu.cycles < target) {
               const remaining = target - this.cpu.cycles;
               const advance = Math.min(remaining, Math.ceil((1232 - this.memory.scanlineCycles) / this.cpu.clockScale));
@@ -1700,11 +1940,14 @@
           else this.pressedButtons &= ~(1 << bit);
           this.memory.setButtons(this.pressedButtons);
         }
+        takeAudio() {
+          return this.memory.takeAudio();
+        }
         getSave() {
           return this.memory.getSave();
         }
         saveState() {
-          return { cpu: { r: Uint32Array.from(this.cpu.r), cpsr: this.cpu.cpsr, cycles: this.cpu.cycles, irqContext: this.cpu.irqContext ? { registers: Uint32Array.from(this.cpu.irqContext.registers), cpsr: this.cpu.irqContext.cpsr } : null }, memory: { ewram: Uint8Array.from(this.memory.ewram), iwram: Uint8Array.from(this.memory.iwram), io: Uint8Array.from(this.memory.io), palette: Uint8Array.from(this.memory.palette), vram: Uint8Array.from(this.memory.vram), oam: Uint8Array.from(this.memory.oam), sram: Uint8Array.from(this.memory.sram), scanlineCycles: this.memory.scanlineCycles, scanline: this.memory.scanline, timerRemainder: [...this.memory.timerRemainder], timerReload: [...this.memory.timerReload], flashBank: this.memory.flashBank, flashState: this.memory.flashState, flashIdMode: this.memory.flashIdMode }, pressedButtons: this.pressedButtons };
+          return { cpu: { r: Uint32Array.from(this.cpu.r), cpsr: this.cpu.cpsr, cycles: this.cpu.cycles, irqContext: this.cpu.irqContext ? { registers: Uint32Array.from(this.cpu.irqContext.registers), cpsr: this.cpu.irqContext.cpsr } : null }, memory: { ewram: Uint8Array.from(this.memory.ewram), iwram: Uint8Array.from(this.memory.iwram), io: Uint8Array.from(this.memory.io), palette: Uint8Array.from(this.memory.palette), vram: Uint8Array.from(this.memory.vram), oam: Uint8Array.from(this.memory.oam), sram: Uint8Array.from(this.memory.sram), scanlineCycles: this.memory.scanlineCycles, scanline: this.memory.scanline, timerRemainder: [...this.memory.timerRemainder], timerReload: [...this.memory.timerReload], dmaSource: [...this.memory.dmaSource], dmaDestination: [...this.memory.dmaDestination], dmaInitialDestination: [...this.memory.dmaInitialDestination], dmaEnabled: [...this.memory.dmaEnabled], audioFifos: this.memory.audioFifos.map((fifo) => ({ data: Int8Array.from(fifo.data), head: fifo.head, length: fifo.length })), directSound: [...this.memory.directSound], audioCycleRemainder: this.memory.audioCycleRemainder, flashBank: this.memory.flashBank, flashState: this.memory.flashState, flashIdMode: this.memory.flashIdMode }, pressedButtons: this.pressedButtons };
         }
         loadState(state) {
           const cpu = state.cpu;
@@ -1718,6 +1961,15 @@
           this.memory.scanline = memory.scanline;
           this.memory.timerRemainder = [...memory.timerRemainder];
           this.memory.timerReload = [...memory.timerReload];
+          this.memory.dmaSource = memory.dmaSource ? [...memory.dmaSource] : [0, 0, 0, 0];
+          this.memory.dmaDestination = memory.dmaDestination ? [...memory.dmaDestination] : [0, 0, 0, 0];
+          this.memory.dmaInitialDestination = memory.dmaInitialDestination ? [...memory.dmaInitialDestination] : [0, 0, 0, 0];
+          this.memory.dmaEnabled = memory.dmaEnabled ? [...memory.dmaEnabled] : [false, false, false, false];
+          if (memory.audioFifos) this.memory.audioFifos = memory.audioFifos.map((fifo) => ({ data: Int8Array.from(fifo.data), head: fifo.head, length: fifo.length }));
+          else this.memory.audioFifos = Array.from({ length: 2 }, () => ({ data: new Int8Array(32), head: 0, length: 0 }));
+          this.memory.directSound = memory.directSound ? [...memory.directSound] : [0, 0];
+          this.memory.audioCycleRemainder = memory.audioCycleRemainder || 0;
+          this.memory.audioFrameCount = 0;
           this.memory.flashBank = memory.flashBank;
           this.memory.flashState = memory.flashState;
           this.memory.flashIdMode = memory.flashIdMode;
@@ -1734,8 +1986,12 @@
   var FRAME_MS = 1e3 / 59.7275;
   var emulator = null;
   var running = true;
+  var speed = 1;
   var nextFrameAt = 0;
   var timer = null;
+  var lastPaintAt = 0;
+  var statsStartedAt = 0;
+  var emulatedFrames = 0;
   function schedule(delay = 0) {
     clearTimeout(timer);
     timer = setTimeout(run, delay);
@@ -1746,9 +2002,25 @@
       schedule(FRAME_MS);
       return;
     }
-    const frame = Uint32Array.from(emulator.runFrame(true));
-    postMessage({ type: "frame", pixels: frame.buffer }, [frame.buffer]);
-    nextFrameAt = Math.max(nextFrameAt + FRAME_MS, performance.now());
+    const started = performance.now();
+    const draw = speed === 1 || started - lastPaintAt >= FRAME_MS;
+    const result = emulator.runFrame(draw);
+    const audio = emulator.takeAudio();
+    emulatedFrames++;
+    if (draw) {
+      const frame = Uint32Array.from(result);
+      postMessage({ type: "frame", pixels: frame.buffer }, [frame.buffer]);
+      lastPaintAt = performance.now();
+    }
+    if (speed === 1 && audio.samples.length) postMessage({ type: "audio", samples: audio.samples.buffer, sampleRate: audio.sampleRate }, [audio.samples.buffer]);
+    const now = performance.now();
+    if (now - statsStartedAt >= 1e3) {
+      const fps = emulatedFrames * 1e3 / (now - statsStartedAt);
+      postMessage({ type: "stats", fps, speed });
+      statsStartedAt = now;
+      emulatedFrames = 0;
+    }
+    nextFrameAt = Math.max(nextFrameAt + FRAME_MS / speed, now);
     schedule(Math.max(0, nextFrameAt - performance.now()));
   }
   self.onmessage = (event) => {
@@ -1756,14 +2028,20 @@
     if (message.type === "init") {
       emulator = new DuoGba(new Uint8Array(message.rom), message.save ? new Uint8Array(message.save) : null);
       nextFrameAt = performance.now();
+      lastPaintAt = 0;
+      statsStartedAt = nextFrameAt;
+      emulatedFrames = 0;
       postMessage({ type: "ready" });
       schedule();
     } else if (message.type === "button") emulator?.setButton(message.key, message.down);
     else if (message.type === "pause") running = !message.paused;
-    else if (message.type === "reset") emulator?.reset();
+    else if (message.type === "speed") {
+      speed = [1, 2, 4].includes(Number(message.value)) ? Number(message.value) : 1;
+      nextFrameAt = performance.now();
+    } else if (message.type === "reset") emulator?.reset();
     else if (message.type === "save" && emulator) {
       const save = emulator.getSave();
-      postMessage({ type: "save", bytes: save.buffer }, [save.buffer]);
+      postMessage({ type: "save", bytes: save.buffer, requestId: message.requestId }, [save.buffer]);
     }
   };
 })();

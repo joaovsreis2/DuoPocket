@@ -9,7 +9,7 @@ const file = process.argv[2];
 const frames = Number(process.env.DUO_BENCH_FRAMES || 300);
 if (!file) throw new Error('Informe a ROM local para o benchmark.');
 const envList = (name) => { const parsed = JSON.parse(process.env[name] || '[]'); return Array.isArray(parsed) ? parsed : [parsed]; };
-const emulator = new DuoGba(fs.readFileSync(file));
+const emulator = new DuoGba(fs.readFileSync(file), process.env.DUO_SAVE_IN ? fs.readFileSync(process.env.DUO_SAVE_IN) : undefined);
 if (process.env.DUO_STATE_IN) emulator.loadState(v8.deserialize(fs.readFileSync(process.env.DUO_STATE_IN)));
 const trace = process.env.DUO_TRACE ? { swi: {}, dma: [], writes: {} } : null;
 if (trace) {
@@ -34,9 +34,12 @@ if (trace) {
     emulator.memory[name] = (address, value) => {
       const a = address >>> 0; let region = null;
       if (a >= 0x04000020 && a < 0x04000040) region = 'affineIo';
+      else if (a >= 0x04000060 && a < 0x040000b0) region = 'soundIo';
+      else if (a >= 0x040000b0 && a < 0x040000e0) region = 'dmaIo';
       else if (a >= 0x05000000 && a < 0x05000400) region = 'palette';
       else if (a >= 0x06000000 && a < 0x06018000) region = 'vram';
       else if (a >= 0x07000000 && a < 0x07000400) region = 'oam';
+      else if (a >= 0x0e000000 && a < 0x10000000) region = 'save';
       if (region) {
         const item = trace.writes[region] || { count: 0, calls: [] }; item.count++;
         if (item.calls.length < 32) item.calls.push({ width, address: `0x${a.toString(16)}`, value: `0x${(value >>> 0).toString(16)}`, pc: `0x${emulator.cpu.r[15].toString(16)}` }); trace.writes[region] = item;
@@ -49,6 +52,8 @@ const scriptedEvents = new Map(); for (const item of envList('DUO_BENCH_EVENTS')
 function writeBmp(fileName, frame) { const pixels = Buffer.alloc(frame.length * 4); for (let index = 0; index < frame.length; index++) { const color = frame[index] >>> 0; pixels[index * 4] = (color >>> 16) & 255; pixels[index * 4 + 1] = (color >>> 8) & 255; pixels[index * 4 + 2] = color & 255; pixels[index * 4 + 3] = 255; } const header = Buffer.alloc(54); header.write('BM'); header.writeUInt32LE(54 + pixels.length, 2); header.writeUInt32LE(54, 10); header.writeUInt32LE(40, 14); header.writeInt32LE(240, 18); header.writeInt32LE(-160, 22); header.writeUInt16LE(1, 26); header.writeUInt16LE(32, 28); header.writeUInt32LE(pixels.length, 34); fs.writeFileSync(fileName, Buffer.concat([header, pixels])); }
 const started = performance.now();
 const samples = [];
+const audioChunks = [];
+let audioSampleRate = 32768;
 for (let frame = 0; frame < frames; frame++) {
   for (const event of scriptedEvents.get(frame) || []) emulator.setButton(event.key, event.down);
   if (process.env.DUO_BENCH_PRESS_START && frame === 300) emulator.setButton('start', true);
@@ -66,6 +71,7 @@ for (let frame = 0; frame < frames; frame++) {
   if (process.env.DUO_BENCH_FULL_FLOW && frame === 2000) emulator.setButton('b', true);
   if (process.env.DUO_BENCH_FULL_FLOW && frame === 2002) emulator.setButton('b', false);
   const image = emulator.runFrame(Boolean(process.env.DUO_RENDER_EVERY_FRAME) || (frame + 1) % 300 === 0 || frame === frames - 1);
+  if (process.env.DUO_AUDIO_WAV) { const audio = emulator.takeAudio(); audioSampleRate = audio.sampleRate; if (audio.samples.length) audioChunks.push(Buffer.from(audio.samples.buffer, audio.samples.byteOffset, audio.samples.byteLength)); }
   if ((frame + 1) % 300 === 0) samples.push({ frame: frame + 1, pc: `0x${emulator.cpu.r[15].toString(16)}`, thumb: emulator.cpu.thumb, dispcnt: `0x${emulator.memory.read16(0x04000000).toString(16)}`, colors: new Set(image).size });
 }
 if (process.env.DUO_PATCH) {
@@ -75,9 +81,15 @@ if (process.env.DUO_PATCH) {
 const elapsed = performance.now() - started;
 const pc = emulator.cpu.r[15] >>> 0;
 if (process.env.DUO_STATE_OUT) fs.writeFileSync(process.env.DUO_STATE_OUT, v8.serialize(emulator.saveState()));
+if (process.env.DUO_SAVE_OUT) fs.writeFileSync(process.env.DUO_SAVE_OUT, emulator.getSave());
 samples.push({ oamActive: Array.from({ length: 128 }, (_, index) => ({ index, a0: emulator.memory.read16(0x07000000 + index * 8), a1: emulator.memory.read16(0x07000002 + index * 8), a2: emulator.memory.read16(0x07000004 + index * 8) })).filter(item => (item.a0 & 0x0300) !== 0x0200).slice(0, 32) });
 samples.push({ ppuIo: Array.from({ length: 44 }, (_, index) => emulator.memory.read16(0x04000000 + index * 2)), heap: [0x02000000, 0x02020000, 0x02020004, 0x02020008, 0x0202000c].map(address => `0x${emulator.memory.read32(address).toString(16)}`) });
 if (process.env.DUO_DUMP) samples.push({ memory: envList('DUO_DUMP').map(item => ({ address: `0x${(item.address >>> 0).toString(16)}`, bytes: Array.from({ length: item.length }, (_, index) => emulator.memory.read8((item.address >>> 0) + index)) })) });
 if (process.env.DUO_STATS) samples.push({ memoryStats: envList('DUO_STATS').map(item => { const bytes = Array.from({ length: item.length }, (_, index) => emulator.memory.read8((item.address >>> 0) + index)); return { address: `0x${(item.address >>> 0).toString(16)}`, length: item.length, nonzero: bytes.reduce((count, value) => count + Boolean(value), 0), firstNonzero: bytes.findIndex(Boolean), lastNonzero: bytes.findLastIndex(Boolean), checksum: bytes.reduce((sum, value) => (sum + value) >>> 0, 0) }; }) });
 if (process.env.DUO_BENCH_BMP) { writeBmp(process.env.DUO_BENCH_BMP, emulator.ppu.frame); if (process.env.DUO_BENCH_LAYERS) { const original = emulator.memory.read16(0x04000000); for (let layer = 0; layer < 5; layer++) { emulator.memory.write16(0x04000000, (original & 0x00ff) | (layer < 4 ? 0x0100 << layer : 0x1000)); writeBmp(process.env.DUO_BENCH_BMP.replace('.bmp', `-${layer}.bmp`), emulator.ppu.render()); } emulator.memory.write16(0x04000000, original); } }
-process.stdout.write(JSON.stringify({ frames, elapsedMs: Math.round(elapsed), fps: Number((frames * 1000 / elapsed).toFixed(2)), pc: `0x${pc.toString(16)}`, thumb: emulator.cpu.thumb, instructionBytes: Array.from({ length: 16 }, (_, index) => emulator.memory.read8(pc + index)), registers: Array.from(emulator.cpu.r, value => `0x${value.toString(16)}`), samples, trace }));
+if (process.env.DUO_AUDIO_WAV) {
+  const pcm = Buffer.concat(audioChunks); const header = Buffer.alloc(44); header.write('RIFF'); header.writeUInt32LE(36 + pcm.length, 4); header.write('WAVE', 8); header.write('fmt ', 12); header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(2, 22); header.writeUInt32LE(audioSampleRate, 24); header.writeUInt32LE(audioSampleRate * 4, 28); header.writeUInt16LE(4, 32); header.writeUInt16LE(16, 34); header.write('data', 36); header.writeUInt32LE(pcm.length, 40); fs.writeFileSync(process.env.DUO_AUDIO_WAV, Buffer.concat([header, pcm]));
+  let peak = 0; let energy = 0; let nonzero = 0; for (let offset = 0; offset < pcm.length; offset += 2) { const value = pcm.readInt16LE(offset); const absolute = Math.abs(value); if (absolute > peak) peak = absolute; if (value) nonzero++; energy += value * value; }
+  samples.push({ audio: { sampleRate: audioSampleRate, frames: pcm.length / 4, peak, rms: pcm.length ? Math.round(Math.sqrt(energy / (pcm.length / 2))) : 0, nonzeroSamples: nonzero, fifoLengths: emulator.memory.audioFifos.map(fifo => fifo.length), directSound: [...emulator.memory.directSound], dmaSource: emulator.memory.dmaSource.map(value => `0x${value.toString(16)}`), dmaDestination: emulator.memory.dmaDestination.map(value => `0x${value.toString(16)}`), dmaControl: [0, 1, 2, 3].map(channel => `0x${emulator.memory.read16(0x040000ba + channel * 12).toString(16)}`), timerReload: [...emulator.memory.timerReload] } });
+}
+process.stdout.write(JSON.stringify({ frames, elapsedMs: Math.round(elapsed), fps: Number((frames * 1000 / elapsed).toFixed(2)), pc: `0x${pc.toString(16)}`, thumb: emulator.cpu.thumb, pressedButtons: emulator.pressedButtons, keyInput: `0x${emulator.memory.read16(0x04000130).toString(16)}`, instructionBytes: Array.from({ length: 16 }, (_, index) => emulator.memory.read8(pc + index)), registers: Array.from(emulator.cpu.r, value => `0x${value.toString(16)}`), samples, trace }));

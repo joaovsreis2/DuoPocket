@@ -14,5 +14,11 @@ contextBridge.exposeInMainWorld('duopocket', {
   launch: (id) => ipcRenderer.invoke('game:launch', id),
   openEmulator: (engine) => ipcRenderer.invoke('emulator:open', engine),
   getRom: () => ipcRenderer.invoke('game:rom'),
-  saveRom: (bytes) => ipcRenderer.invoke('game:save', bytes)
+  saveRom: (bytes) => ipcRenderer.invoke('game:save', bytes),
+  onBeforeGameClose: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('game:before-close', handler);
+    return () => ipcRenderer.removeListener('game:before-close', handler);
+  },
+  gameCloseReady: () => ipcRenderer.invoke('game:close-ready')
 });

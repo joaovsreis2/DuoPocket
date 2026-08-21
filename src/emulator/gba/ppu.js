@@ -58,7 +58,41 @@ class GbaPpu {
     const affinePixel = (n, x, y) => { const control = bg[n]; const matrix = affine[n]; const size = 128 << ((control >>> 14) & 3); let worldX = (matrix.x + matrix.pa * x + matrix.pb * y) >> 8; let worldY = (matrix.y + matrix.pc * x + matrix.pd * y) >> 8; if (control & 0x2000) { worldX = ((worldX % size) + size) % size; worldY = ((worldY % size) + size) % size; } else if (worldX < 0 || worldY < 0 || worldX >= size || worldY >= size) return -1; const mapBase = ((control >>> 8) & 31) * 0x800; const charBase = ((control >>> 2) & 3) * 0x4000; const tile = vram[mapBase + (worldY >>> 3) * (size >>> 3) + (worldX >>> 3)]; const paletteIndex = vram[charBase + tile * 64 + (worldY & 7) * 8 + (worldX & 7)]; return paletteIndex ? read16(palette, paletteIndex * 2) : -1; };
     const blendControl = read16(io, 0x50); const effect = (blendControl >>> 6) & 3; const amount = Math.min(16, read16(io, 0x54) & 31); const applyBrightness = (color, layer) => { if (!(blendControl & (1 << layer)) || effect < 2) return color; let red = color & 31; let green = (color >>> 5) & 31; let blue = (color >>> 10) & 31; if (effect === 2) { red += ((31 - red) * amount) >> 4; green += ((31 - green) * amount) >> 4; blue += ((31 - blue) * amount) >> 4; } else { red -= (red * amount) >> 4; green -= (green * amount) >> 4; blue -= (blue * amount) >> 4; } return red | (green << 5) | (blue << 10); };
     const backdrop = read16(palette, 0); const lut = this.colorLut; const oneDimensional = Boolean(displayControl & 0x40);
-    for (let y = 0; y < 160; y++) for (let x = 0; x < 240; x++) { const offset = y * 240 + x; const windowMask = windowMasks ? windowMasks[offset] : 0x3f; let best = 4; let selectedLayer = 5; let color = backdrop; for (let n = 0; n < 4; n++) { if (!(displayControl & (0x0100 << n)) || !(windowMask & (1 << n)) || (mode === 1 && n === 3) || (mode === 2 && n < 2)) continue; const isAffine = (mode === 1 && n === 2) || (mode === 2 && n >= 2); const pixel = isAffine ? affinePixel(n, x, y) : bgPixel(n, x, y); if (pixel < 0 || bgInfo[n].priority >= best) continue; best = bgInfo[n].priority; selectedLayer = n; color = pixel; } const visibleSprites = spriteLines?.visible[y]; if (visibleSprites?.length && (windowMask & 0x10)) { const sprite = this.spritePixel(x, y, best, visibleSprites, oneDimensional); if (sprite >= 0) { color = sprite; selectedLayer = 4; } } if ((windowMask & 0x20) && effect >= 2) color = applyBrightness(color, selectedLayer); this.frame[offset] = lut[color & 0x7fff]; }
+    const alpha = read16(io, 0x52); const eva = Math.min(16, alpha & 31); const evb = Math.min(16, (alpha >>> 8) & 31);
+    const blend = (first, second) => {
+      const red = Math.min(31, (((first & 31) * eva) + ((second & 31) * evb)) >> 4);
+      const green = Math.min(31, ((((first >>> 5) & 31) * eva) + (((second >>> 5) & 31) * evb)) >> 4);
+      const blue = Math.min(31, ((((first >>> 10) & 31) * eva) + (((second >>> 10) & 31) * evb)) >> 4);
+      return red | (green << 5) | (blue << 10);
+    };
+    const before = (priority, rank, otherPriority, otherRank) => priority < otherPriority || (priority === otherPriority && rank < otherRank);
+    for (let y = 0; y < 160; y++) for (let x = 0; x < 240; x++) {
+      const offset = y * 240 + x; const windowMask = windowMasks ? windowMasks[offset] : 0x3f;
+      let topColor = backdrop; let topLayer = 5; let topPriority = 4; let topRank = 6;
+      let secondColor = 0; let secondLayer = -1; let secondPriority = 5; let secondRank = 7;
+      const insert = (color, layer, priority, rank) => {
+        if (before(priority, rank, topPriority, topRank)) {
+          secondColor = topColor; secondLayer = topLayer; secondPriority = topPriority; secondRank = topRank;
+          topColor = color; topLayer = layer; topPriority = priority; topRank = rank;
+        } else if (before(priority, rank, secondPriority, secondRank)) {
+          secondColor = color; secondLayer = layer; secondPriority = priority; secondRank = rank;
+        }
+      };
+      for (let n = 0; n < 4; n++) {
+        if (!(displayControl & (0x0100 << n)) || !(windowMask & (1 << n)) || (mode === 1 && n === 3) || (mode === 2 && n < 2)) continue;
+        const isAffine = (mode === 1 && n === 2) || (mode === 2 && n >= 2); const pixel = isAffine ? affinePixel(n, x, y) : bgPixel(n, x, y);
+        if (pixel >= 0) insert(pixel, n, bgInfo[n].priority, n + 1);
+      }
+      let semiTransparentObject = false; const visibleSprites = spriteLines?.visible[y];
+      if (visibleSprites?.length && (windowMask & 0x10)) {
+        const sprite = this.spriteSample(x, y, 4, visibleSprites, oneDimensional);
+        if (sprite >= 0) { const priority = (sprite >>> 15) & 3; const objectMode = (sprite >>> 17) & 3; insert(sprite & 0x7fff, 4, priority, 0); semiTransparentObject = topLayer === 4 && objectMode === 1; }
+      }
+      let color = topColor; const effectsEnabled = Boolean(windowMask & 0x20); const secondTarget = secondLayer >= 0 && Boolean(blendControl & (1 << (8 + secondLayer)));
+      if (effectsEnabled && secondTarget && (semiTransparentObject || (effect === 1 && (blendControl & (1 << topLayer))))) color = blend(topColor, secondColor);
+      else if (effectsEnabled && effect >= 2) color = applyBrightness(topColor, topLayer);
+      this.frame[offset] = lut[color & 0x7fff];
+    }
     return this.frame;
   }
 
@@ -92,7 +126,7 @@ class GbaPpu {
       const objectMode = (attr0 >>> 10) & 3; if (objectMode === 3) continue;
       const affine = Boolean(attr0 & 0x0100); if (!affine && (attr0 & 0x0200)) continue;
       const shape = (attr0 >>> 14) & 3; const sizeIndex = (attr1 >>> 14) & 3; const dim = sizes[sizeIndex]?.[shape] || [8, 8]; const sx = attr1 & 0x1ff; const sy = attr0 & 0xff;
-      const box = affine && (attr0 & 0x0200) ? [dim[0] * 2, dim[1] * 2] : dim; const sprite = { attr0, attr1, attr2, dim, box, affine, sx: sx >= 256 ? sx - 512 : sx, sy: sy >= 160 ? sy - 256 : sy };
+      const box = affine && (attr0 & 0x0200) ? [dim[0] * 2, dim[1] * 2] : dim; const sprite = { attr0, attr1, attr2, objectMode, dim, box, affine, sx: sx >= 256 ? sx - 512 : sx, sy: sy >= 160 ? sy - 256 : sy };
       const target = objectMode === 2 ? lines.window : lines.visible; for (let y = Math.max(0, sprite.sy); y < Math.min(160, sprite.sy + box[1]); y++) target[y].push(sprite);
     }
     return lines;
@@ -115,16 +149,22 @@ class GbaPpu {
     return red | (green << 5) | (blue << 10);
   }
 
-  spritePixel(x, y, bgPriority, sprites, oneDimensional) {
+  spriteSample(x, y, bgPriority, sprites, oneDimensional) {
     const vram = this.memory.vram; const oam = this.memory.oam; const palette = this.memory.palette; const read16 = (bytes, offset) => bytes[offset] | (bytes[offset + 1] << 8);
+    let selected = -1; let selectedPriority = 4;
     for (const sprite of sprites) {
-      const { attr0, attr1, attr2, dim, box } = sprite; const priority = (attr2 >>> 10) & 3; if (priority > bgPriority) continue;
+      const { attr0, attr1, attr2, objectMode, dim, box } = sprite; const priority = (attr2 >>> 10) & 3; if (priority > bgPriority || priority >= selectedPriority) continue;
       let px = x - sprite.sx; let py = y - sprite.sy; if (px < 0 || py < 0 || px >= box[0] || py >= box[1]) continue;
       if (sprite.affine) { const matrix = (attr1 >>> 9) & 31; const base = matrix * 32; const signed = (value) => (value << 16) >> 16; const pa = signed(read16(oam, base + 6)); const pb = signed(read16(oam, base + 14)); const pc = signed(read16(oam, base + 22)); const pd = signed(read16(oam, base + 30)); const dx = px - (box[0] >> 1); const dy = py - (box[1] >> 1); px = ((pa * dx + pb * dy) >> 8) + (dim[0] >> 1); py = ((pc * dx + pd * dy) >> 8) + (dim[1] >> 1); if (px < 0 || py < 0 || px >= dim[0] || py >= dim[1]) continue; }
       else { if (attr1 & 0x1000) px = dim[0] - 1 - px; if (attr1 & 0x2000) py = dim[1] - 1 - py; }
-      const color8 = Boolean(attr0 & 0x2000); const tile = attr2 & 0x3ff; const tileX = px >>> 3; const tileY = py >>> 3; const factor = color8 ? 2 : 1; const tilesWide = dim[0] >>> 3; const tileNumber = tile + tileY * (oneDimensional ? tilesWide * factor : 32) + tileX * factor; const dataOffset = 0x10000 + tileNumber * 32 + (py & 7) * (color8 ? 8 : 4) + (color8 ? (px & 7) : ((px & 7) >>> 1)); const data = vram[dataOffset]; const paletteIndex = color8 ? data : ((data >>> ((px & 1) * 4)) & 15) + ((attr2 >>> 12) & 15) * 16; if (!paletteIndex) continue; return read16(palette, (0x100 + paletteIndex) * 2);
+      const color8 = Boolean(attr0 & 0x2000); const tile = color8 ? (attr2 & 0x3fe) : (attr2 & 0x3ff); const tileX = px >>> 3; const tileY = py >>> 3; const factor = color8 ? 2 : 1; const tilesWide = dim[0] >>> 3; const tileNumber = tile + tileY * (oneDimensional ? tilesWide * factor : 32) + tileX * factor; const dataOffset = 0x10000 + tileNumber * 32 + (py & 7) * (color8 ? 8 : 4) + (color8 ? (px & 7) : ((px & 7) >>> 1)); const data = vram[dataOffset]; const pixel = color8 ? data : (data >>> ((px & 1) * 4)) & 15; if (!pixel) continue; const paletteIndex = color8 ? pixel : pixel + ((attr2 >>> 12) & 15) * 16; selected = read16(palette, (0x100 + paletteIndex) * 2) | (priority << 15) | (objectMode << 17); selectedPriority = priority;
     }
-    return -1;
+    return selected;
+  }
+
+  spritePixel(x, y, bgPriority, sprites, oneDimensional) {
+    const sample = this.spriteSample(x, y, bgPriority, sprites, oneDimensional);
+    return sample < 0 ? -1 : sample & 0x7fff;
   }
 }
 

@@ -22,6 +22,20 @@ test('barramento GBA mapeia ROM, EWRAM e VRAM', () => {
   assert.equal(memory.read16(0x06000000), 0x7fff);
 });
 
+test('barramento GBA espelha RAM, paleta, VRAM e OAM como o hardware', () => {
+  const memory = new GbaMemory(new Uint8Array());
+  memory.write32(0x02000000, 0x11223344);
+  memory.write32(0x03000000, 0x55667788);
+  memory.write16(0x05000000, 0x1234);
+  memory.write16(0x06010000, 0x5678);
+  memory.write16(0x07000000, 0x9abc);
+  assert.equal(memory.read32(0x02040000), 0x11223344);
+  assert.equal(memory.read32(0x03008000), 0x55667788);
+  assert.equal(memory.read16(0x05000400), 0x1234);
+  assert.equal(memory.read16(0x06018000), 0x5678);
+  assert.equal(memory.read16(0x07000400), 0x9abc);
+});
+
 test('KEYINPUT inicia com todos os botões soltos', () => {
   const memory = new GbaMemory(new Uint8Array()); assert.equal(memory.read16(0x04000130), 0x03ff);
 });
@@ -227,6 +241,30 @@ test('PPU usa a metade OBJ da paleta para sprites', () => {
   const memory = new GbaMemory(new Uint8Array()); const ppu = new GbaPpu(memory); memory.write16(0x04000000, 0x1040); memory.write16(0x07000000, 0); memory.write16(0x07000002, 0); memory.write16(0x07000004, 0); memory.write8(0x06010000, 1); memory.write16(0x05000002, 0x001f); memory.write16(0x05000202, 0x7c00); assert.equal(ppu.render()[0], ppu.color15(0x7c00));
 });
 
+test('PPU trata índice zero como transparente em qualquer banco OBJ', () => {
+  const memory = new GbaMemory(new Uint8Array()); const ppu = new GbaPpu(memory);
+  memory.write16(0x04000000, 0x1000); memory.write16(0x05000000, 0x001f); memory.write16(0x05000220, 0x03e0);
+  memory.write16(0x07000000, 0); memory.write16(0x07000002, 0); memory.write16(0x07000004, 0x1000);
+  memory.write8(0x06010000, 0);
+  assert.equal(ppu.render()[0], ppu.color15(0x001f));
+});
+
+test('PPU mistura primeira e segunda camadas com BLDALPHA', () => {
+  const memory = new GbaMemory(new Uint8Array()); const ppu = new GbaPpu(memory);
+  memory.write16(0x04000000, 0x0300); memory.write16(0x04000008, 0x0100); memory.write16(0x0400000a, 0x0201);
+  memory.write16(0x06000800, 1); memory.write16(0x06001000, 0x1001); memory.write8(0x06000020, 0x11);
+  memory.write16(0x05000002, 0x001f); memory.write16(0x05000022, 0x7c00);
+  memory.write16(0x04000050, 0x0241); memory.write16(0x04000052, 0x0808);
+  const color = ppu.render()[0]; assert.equal(color & 0xff, 123); assert.equal((color >>> 16) & 0xff, 123);
+});
+
+test('PPU invalida o quadro quando muda a seleção de BG no DISPCNT', () => {
+  const memory = new GbaMemory(new Uint8Array()); const ppu = new GbaPpu(memory);
+  memory.write16(0x04000008, 0x0100); memory.write16(0x0400000a, 0x0200); memory.write16(0x06000800, 1); memory.write16(0x06001000, 0x1001); memory.write8(0x06000020, 0x11); memory.write16(0x05000002, 0x001f); memory.write16(0x05000022, 0x7c00);
+  memory.write16(0x04000000, 0x0100); assert.equal(ppu.render()[0], ppu.color15(0x001f));
+  memory.write16(0x04000000, 0x0200); assert.equal(ppu.render()[0], ppu.color15(0x7c00));
+});
+
 test('ROM ARM mínima executa escrita de vídeo pelo barramento', () => {
   const words = [0xe59f0018, 0xe3a01003, 0xe5801000, 0xe59f2010, 0xe3a0301f, 0xe5823000, 0xeafffffe, 0, 0x04000000, 0x06000000];
   const memory = new GbaMemory(romWithWords(words));
@@ -255,6 +293,15 @@ test('DMA inicia quando contagem e controle são escritos juntos em 32 bits', ()
 
 test('DMA3 inicia ao escrever controle de 16 bits em 0x040000DE', () => {
   const memory = new GbaMemory(new Uint8Array()); memory.write32(0x02000000, 0x76543210); memory.write32(0x040000d4, 0x02000000); memory.write32(0x040000d8, 0x06000000); memory.write16(0x040000dc, 1); memory.write16(0x040000de, 0x8400); assert.equal(memory.read32(0x06000000), 0x76543210);
+});
+
+test('Direct Sound consome FIFO por timer e repõe dados com DMA especial', () => {
+  const memory = new GbaMemory(new Uint8Array()); for (let index = 0; index < 64; index++) memory.write8(0x02000000 + index, 0x7f);
+  memory.write16(0x04000082, 0x0304); memory.write16(0x04000084, 0x0080);
+  memory.write32(0x040000bc, 0x02000000); memory.write32(0x040000c0, 0x040000a0); memory.write32(0x040000c4, 0xb6000004);
+  assert.equal(memory.audioFifos[0].length, 16); assert.equal(memory.dmaSource[1], 0x02000010);
+  memory.write16(0x04000100, 0xfe00); memory.write16(0x04000102, 0x0080); memory.tick(512);
+  const audio = memory.takeAudio(); assert.equal(audio.sampleRate, 32768); assert.deepEqual(Array.from(audio.samples), [16256, 16256]); assert.equal(memory.audioFifos[0].length, 31); assert.equal(memory.dmaSource[1], 0x02000020);
 });
 
 test('Flash 1M identifica, grava e troca bancos de 64 KiB', () => {
