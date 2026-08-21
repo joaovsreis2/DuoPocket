@@ -12,6 +12,8 @@ const envList = (name) => { const parsed = JSON.parse(process.env[name] || '[]')
 const emulator = new DuoGba(fs.readFileSync(file), process.env.DUO_SAVE_IN ? fs.readFileSync(process.env.DUO_SAVE_IN) : undefined);
 if (process.env.DUO_STATE_IN) emulator.loadState(v8.deserialize(fs.readFileSync(process.env.DUO_STATE_IN)));
 const trace = process.env.DUO_TRACE ? { swi: {}, dma: [], writes: {} } : null;
+const traceRanges = envList('DUO_TRACE_RANGES');
+const traceLimit = Number(process.env.DUO_TRACE_LIMIT || 32);
 if (trace) {
   const originalSwi = emulator.cpu.handleSwi.bind(emulator.cpu);
   emulator.cpu.handleSwi = (code) => {
@@ -40,9 +42,13 @@ if (trace) {
       else if (a >= 0x06000000 && a < 0x06018000) region = 'vram';
       else if (a >= 0x07000000 && a < 0x07000400) region = 'oam';
       else if (a >= 0x0e000000 && a < 0x10000000) region = 'save';
+      else {
+        const range = traceRanges.find(item => a >= (item.address >>> 0) && a < ((item.address + item.length) >>> 0));
+        if (range) region = range.name || `range_${(range.address >>> 0).toString(16)}`;
+      }
       if (region) {
         const item = trace.writes[region] || { count: 0, calls: [] }; item.count++;
-        if (item.calls.length < 32) item.calls.push({ width, address: `0x${a.toString(16)}`, value: `0x${(value >>> 0).toString(16)}`, pc: `0x${emulator.cpu.r[15].toString(16)}` }); trace.writes[region] = item;
+        if (item.calls.length < traceLimit) item.calls.push({ width, address: `0x${a.toString(16)}`, value: `0x${(value >>> 0).toString(16)}`, pc: `0x${emulator.cpu.r[15].toString(16)}` }); trace.writes[region] = item;
       }
       return original(address, value);
     };
@@ -84,6 +90,7 @@ if (process.env.DUO_STATE_OUT) fs.writeFileSync(process.env.DUO_STATE_OUT, v8.se
 if (process.env.DUO_SAVE_OUT) fs.writeFileSync(process.env.DUO_SAVE_OUT, emulator.getSave());
 samples.push({ oamActive: Array.from({ length: 128 }, (_, index) => ({ index, a0: emulator.memory.read16(0x07000000 + index * 8), a1: emulator.memory.read16(0x07000002 + index * 8), a2: emulator.memory.read16(0x07000004 + index * 8) })).filter(item => (item.a0 & 0x0300) !== 0x0200).slice(0, 32) });
 samples.push({ ppuIo: Array.from({ length: 44 }, (_, index) => emulator.memory.read16(0x04000000 + index * 2)), heap: [0x02000000, 0x02020000, 0x02020004, 0x02020008, 0x0202000c].map(address => `0x${emulator.memory.read32(address).toString(16)}`) });
+if (process.env.DUO_POSITION) { const saveBlock1 = emulator.memory.read32(0x03005008); samples.push({ position: { saveBlock1: `0x${saveBlock1.toString(16)}`, x: emulator.memory.read16(saveBlock1), y: emulator.memory.read16(saveBlock1 + 2), mapGroup: emulator.memory.read8(saveBlock1 + 4), mapNum: emulator.memory.read8(saveBlock1 + 5) } }); }
 if (process.env.DUO_DUMP) samples.push({ memory: envList('DUO_DUMP').map(item => ({ address: `0x${(item.address >>> 0).toString(16)}`, bytes: Array.from({ length: item.length }, (_, index) => emulator.memory.read8((item.address >>> 0) + index)) })) });
 if (process.env.DUO_STATS) samples.push({ memoryStats: envList('DUO_STATS').map(item => { const bytes = Array.from({ length: item.length }, (_, index) => emulator.memory.read8((item.address >>> 0) + index)); return { address: `0x${(item.address >>> 0).toString(16)}`, length: item.length, nonzero: bytes.reduce((count, value) => count + Boolean(value), 0), firstNonzero: bytes.findIndex(Boolean), lastNonzero: bytes.findLastIndex(Boolean), checksum: bytes.reduce((sum, value) => (sum + value) >>> 0, 0) }; }) });
 if (process.env.DUO_BENCH_BMP) { writeBmp(process.env.DUO_BENCH_BMP, emulator.ppu.frame); if (process.env.DUO_BENCH_LAYERS) { const original = emulator.memory.read16(0x04000000); for (let layer = 0; layer < 5; layer++) { emulator.memory.write16(0x04000000, (original & 0x00ff) | (layer < 4 ? 0x0100 << layer : 0x1000)); writeBmp(process.env.DUO_BENCH_BMP.replace('.bmp', `-${layer}.bmp`), emulator.ppu.render()); } emulator.memory.write16(0x04000000, original); } }

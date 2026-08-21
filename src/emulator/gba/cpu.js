@@ -81,6 +81,12 @@ class Arm7tdmi {
     return { value: U32((value >>> rotate) | (value << (32 - rotate))), carry: (value >>> (rotate - 1)) & 1 };
   }
 
+  readWord(address) {
+    const word = this.memory.read32(address);
+    const rotate = (address & 3) << 3;
+    return rotate ? U32((word >>> rotate) | (word << (32 - rotate))) : word;
+  }
+
   armOperand(instr) {
     if (instr & 0x02000000) {
       const imm = instr & 0xff;
@@ -137,7 +143,7 @@ class Arm7tdmi {
     if ((instr & 0x0fbf0fff) === 0x010f0000) { this.r[(instr >>> 12) & 15] = this.cpsr >>> 0; this.cycles++; return; }
     if ((instr & 0x0db0fff0) === 0x0120f000 || (instr & 0x0db0f000) === 0x0320f000) { const immediate = Boolean(instr & 0x02000000); const value = immediate ? this.armOperand(instr).value : this.r[instr & 15]; this.writePsr(value, (instr >>> 16) & 15); this.cycles++; return; }
     if ((instr & 0x0f8000f0) === 0x00800090) { const signed = Boolean(instr & 0x00400000); const accumulate = Boolean(instr & 0x00200000); const set = Boolean(instr & 0x00100000); const rdHi = (instr >>> 16) & 15; const rdLo = (instr >>> 12) & 15; const rm = instr & 15; const rs = (instr >>> 8) & 15; let result = signed ? BigInt(S32(this.r[rm])) * BigInt(S32(this.r[rs])) : BigInt(this.r[rm]) * BigInt(this.r[rs]); if (accumulate) result += (BigInt(this.r[rdHi]) << 32n) | BigInt(this.r[rdLo]); result &= 0xffffffffffffffffn; this.r[rdLo] = Number(result & 0xffffffffn); this.r[rdHi] = Number((result >> 32n) & 0xffffffffn); if (set) this.setFlags(this.r[rdHi] >>> 31, result === 0n); this.cycles += 3; return; }
-    if ((instr & 0x0fb00ff0) === 0x01000090) { const byte = Boolean(instr & 0x00400000); const rn = (instr >>> 16) & 15; const rd = (instr >>> 12) & 15; const rm = instr & 15; const address = this.r[rn]; const old = byte ? this.memory.read8(address) : this.memory.read32(address); if (byte) this.memory.write8(address, this.r[rm]); else this.memory.write32(address, this.r[rm]); this.r[rd] = old; this.cycles += 4; return; }
+    if ((instr & 0x0fb00ff0) === 0x01000090) { const byte = Boolean(instr & 0x00400000); const rn = (instr >>> 16) & 15; const rd = (instr >>> 12) & 15; const rm = instr & 15; const address = this.r[rn]; const old = byte ? this.memory.read8(address) : this.readWord(address); if (byte) this.memory.write8(address, this.r[rm]); else this.memory.write32(address, this.r[rm]); this.r[rd] = old; this.cycles += 4; return; }
     if ((instr & 0x0e000090) === 0x00000090 && (instr & 0x0fc000f0) !== 0x00000090) { this.armHalfwordTransfer(instr); return; }
     if ((instr & 0x0c000000) === 0x04000000) { this.armLoadStore(instr); return; }
     if ((instr & 0x0e000000) === 0x08000000) { this.armBlockTransfer(instr); return; }
@@ -257,7 +263,7 @@ class Arm7tdmi {
     const offset = i ? this.shift(this.r[instr & 15], (instr >>> 5) & 3, (instr >>> 7) & 31).value : (instr & 0xfff);
     const adjusted = u ? U32(base + offset) : U32(base - offset);
     const address = p ? adjusted : base;
-    if (l) this.r[rd] = b ? this.memory.read8(address) : this.memory.read32(address);
+    if (l) this.r[rd] = b ? this.memory.read8(address) : this.readWord(address);
     else if (b) this.memory.write8(address, this.r[rd]) ; else this.memory.write32(address, this.r[rd]);
     if (!p || w) this.r[rn] = adjusted;
     this.cycles += l ? 3 : 2;
@@ -345,7 +351,7 @@ class Arm7tdmi {
       this.r[rd] = U32(out); this.setFlags(out >>> 31, out === 0, shifted ? shifted.carry : this.c); this.cycles++; return;
     }
     if ((instr & 0xfc00) === 0x4400) { const opcode = (instr >>> 8) & 3; const rd = (instr & 7) | ((instr >>> 4) & 8); const rs = (instr >>> 3) & 15; if (opcode === 0) this.r[rd] = this.add(this.r[rd], this.r[rs]); else if (opcode === 1) this.sub(this.r[rd], this.r[rs]); else if (opcode === 2) this.r[rd] = this.r[rs]; else { const target = this.r[rs] >>> 0; this.r[15] = target & ~1; this.thumb = Boolean(target & 1); } this.cycles += 2; return; }
-    if ((instr & 0xf800) === 0x4800) { const rd = (instr >>> 8) & 7; const address = ((((this.r[15] + 2) & ~3) + ((instr & 0xff) << 2))) >>> 0; this.r[rd] = this.memory.read32(address); this.cycles += 2; return; }
+    if ((instr & 0xf800) === 0x4800) { const rd = (instr >>> 8) & 7; const address = ((((this.r[15] + 2) & ~3) + ((instr & 0xff) << 2))) >>> 0; this.r[rd] = this.readWord(address); this.cycles += 2; return; }
     if ((instr & 0xf000) === 0x5000 || (instr & 0xe000) === 0x6000 || (instr & 0xf000) === 0x8000 || (instr & 0xf000) === 0x9000) { this.thumbLoadStore(instr); return; }
     if ((instr & 0xf000) === 0xa000) { const rd = (instr >>> 8) & 7; const base = (instr & 0x0800) ? this.r[13] : U32((this.r[15] + 2) & ~3); this.r[rd] = U32(base + ((instr & 0xff) << 2)); this.cycles++; return; }
     if ((instr & 0xff00) === 0xb000) { const amount = (instr & 0x7f) << 2; this.r[13] = (instr & 0x80) ? U32(this.r[13] - amount) : U32(this.r[13] + amount); this.cycles++; return; }
@@ -362,12 +368,12 @@ class Arm7tdmi {
     const rd = instr & 7;
     if ((instr & 0xf000) === 0x5000) {
       const op = (instr >>> 9) & 7; const rb = (instr >>> 3) & 7; const ro = (instr >>> 6) & 7; const address = U32(this.r[rb] + this.r[ro]);
-      if (op === 0) this.memory.write32(address, this.r[rd]); else if (op === 1) this.memory.write16(address, this.r[rd]); else if (op === 2) this.memory.write8(address, this.r[rd]); else if (op === 3) this.r[rd] = U32((this.memory.read8(address) << 24) >> 24); else if (op === 4) this.r[rd] = this.memory.read32(address); else if (op === 5) this.r[rd] = this.memory.read16(address); else if (op === 6) this.r[rd] = this.memory.read8(address); else this.r[rd] = U32((this.memory.read16(address) << 16) >> 16);
+      if (op === 0) this.memory.write32(address, this.r[rd]); else if (op === 1) this.memory.write16(address, this.r[rd]); else if (op === 2) this.memory.write8(address, this.r[rd]); else if (op === 3) this.r[rd] = U32((this.memory.read8(address) << 24) >> 24); else if (op === 4) this.r[rd] = this.readWord(address); else if (op === 5) this.r[rd] = this.memory.read16(address); else if (op === 6) this.r[rd] = this.memory.read8(address); else this.r[rd] = U32((this.memory.read16(address) << 16) >> 16);
       this.cycles += 2; return;
     }
-    if ((instr & 0xf000) === 0x9000) { const load = Boolean(instr & 0x0800); const spRd = (instr >>> 8) & 7; const address = U32(this.r[13] + ((instr & 0xff) << 2)); if (load) this.r[spRd] = this.memory.read32(address); else this.memory.write32(address, this.r[spRd]); this.cycles += 2; return; }
+    if ((instr & 0xf000) === 0x9000) { const load = Boolean(instr & 0x0800); const spRd = (instr >>> 8) & 7; const address = U32(this.r[13] + ((instr & 0xff) << 2)); if (load) this.r[spRd] = this.readWord(address); else this.memory.write32(address, this.r[spRd]); this.cycles += 2; return; }
     if ((instr & 0xf000) === 0x8000) { const load = Boolean(instr & 0x0800); const rb = (instr >>> 3) & 7; const address = U32(this.r[rb] + (((instr >>> 6) & 0x1f) << 1)); if (load) this.r[rd] = this.memory.read16(address); else this.memory.write16(address, this.r[rd]); this.cycles += 2; return; }
-    const load = Boolean(instr & 0x0800); const byte = Boolean(instr & 0x1000); const rb = (instr >>> 3) & 7; const offset = ((instr >>> 6) & 0x1f) << (byte ? 0 : 2); const address = U32(this.r[rb] + offset); if (load) this.r[rd] = byte ? this.memory.read8(address) : this.memory.read32(address); else if (byte) this.memory.write8(address, this.r[rd]); else this.memory.write32(address, this.r[rd]); this.cycles += 2;
+    const load = Boolean(instr & 0x0800); const byte = Boolean(instr & 0x1000); const rb = (instr >>> 3) & 7; const offset = ((instr >>> 6) & 0x1f) << (byte ? 0 : 2); const address = U32(this.r[rb] + offset); if (load) this.r[rd] = byte ? this.memory.read8(address) : this.readWord(address); else if (byte) this.memory.write8(address, this.r[rd]); else this.memory.write32(address, this.r[rd]); this.cycles += 2;
   }
 }
 

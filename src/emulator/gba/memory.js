@@ -122,9 +122,12 @@ class GbaMemory {
   }
 
   writeFlash(offset, value) {
-    if (value === 0xf0) { this.flashState = 0; this.flashIdMode = false; return; }
+    // Depois do comando A0, o próximo byte é sempre dado. 0xF0 só reinicia o
+    // chip no modo de comandos; tratá-lo antes daqui impedia o FireRed de
+    // gravar qualquer byte 0xF0 e fazia a verificação do save falhar.
     if (this.flashState === 3) { this.sram[this.flashBank * 0x10000 + offset] &= value; this.flashState = 0; return; }
     if (this.flashState === 4) { if (offset === 0) this.flashBank = value & 1; this.flashState = 0; return; }
+    if (value === 0xf0) { this.flashState = 0; this.flashIdMode = false; return; }
     if (this.flashState === 5) { this.flashState = offset === 0x5555 && value === 0xaa ? 6 : 0; return; }
     if (this.flashState === 6) { this.flashState = offset === 0x2aaa && value === 0x55 ? 7 : 0; return; }
     if (this.flashState === 7) {

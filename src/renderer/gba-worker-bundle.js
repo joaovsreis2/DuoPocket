@@ -178,11 +178,6 @@
           } else if (a >= REGION.OAM && a < REGION.ROM) videoWrite(this.oam, a - REGION.OAM & 1023);
         }
         writeFlash(offset, value) {
-          if (value === 240) {
-            this.flashState = 0;
-            this.flashIdMode = false;
-            return;
-          }
           if (this.flashState === 3) {
             this.sram[this.flashBank * 65536 + offset] &= value;
             this.flashState = 0;
@@ -191,6 +186,11 @@
           if (this.flashState === 4) {
             if (offset === 0) this.flashBank = value & 1;
             this.flashState = 0;
+            return;
+          }
+          if (value === 240) {
+            this.flashState = 0;
+            this.flashIdMode = false;
             return;
           }
           if (this.flashState === 5) {
@@ -598,6 +598,11 @@
           if (!rotate) return { value, carry: value >>> 31 };
           return { value: U32(value >>> rotate | value << 32 - rotate), carry: value >>> rotate - 1 & 1 };
         }
+        readWord(address) {
+          const word = this.memory.read32(address);
+          const rotate = (address & 3) << 3;
+          return rotate ? U32(word >>> rotate | word << 32 - rotate) : word;
+        }
         armOperand(instr) {
           if (instr & 33554432) {
             const imm = instr & 255;
@@ -702,7 +707,7 @@
             const rd = instr >>> 12 & 15;
             const rm = instr & 15;
             const address = this.r[rn];
-            const old = byte ? this.memory.read8(address) : this.memory.read32(address);
+            const old = byte ? this.memory.read8(address) : this.readWord(address);
             if (byte) this.memory.write8(address, this.r[rm]);
             else this.memory.write32(address, this.r[rm]);
             this.r[rd] = old;
@@ -1058,7 +1063,7 @@
           const offset = i ? this.shift(this.r[instr & 15], instr >>> 5 & 3, instr >>> 7 & 31).value : instr & 4095;
           const adjusted = u ? U32(base + offset) : U32(base - offset);
           const address = p ? adjusted : base;
-          if (l) this.r[rd] = b ? this.memory.read8(address) : this.memory.read32(address);
+          if (l) this.r[rd] = b ? this.memory.read8(address) : this.readWord(address);
           else if (b) this.memory.write8(address, this.r[rd]);
           else this.memory.write32(address, this.r[rd]);
           if (!p || w) this.r[rn] = adjusted;
@@ -1320,7 +1325,7 @@
           if ((instr & 63488) === 18432) {
             const rd = instr >>> 8 & 7;
             const address = (this.r[15] + 2 & ~3) + ((instr & 255) << 2) >>> 0;
-            this.r[rd] = this.memory.read32(address);
+            this.r[rd] = this.readWord(address);
             this.cycles += 2;
             return;
           }
@@ -1430,7 +1435,7 @@
             else if (op === 1) this.memory.write16(address2, this.r[rd]);
             else if (op === 2) this.memory.write8(address2, this.r[rd]);
             else if (op === 3) this.r[rd] = U32(this.memory.read8(address2) << 24 >> 24);
-            else if (op === 4) this.r[rd] = this.memory.read32(address2);
+            else if (op === 4) this.r[rd] = this.readWord(address2);
             else if (op === 5) this.r[rd] = this.memory.read16(address2);
             else if (op === 6) this.r[rd] = this.memory.read8(address2);
             else this.r[rd] = U32(this.memory.read16(address2) << 16 >> 16);
@@ -1441,7 +1446,7 @@
             const load2 = Boolean(instr & 2048);
             const spRd = instr >>> 8 & 7;
             const address2 = U32(this.r[13] + ((instr & 255) << 2));
-            if (load2) this.r[spRd] = this.memory.read32(address2);
+            if (load2) this.r[spRd] = this.readWord(address2);
             else this.memory.write32(address2, this.r[spRd]);
             this.cycles += 2;
             return;
@@ -1460,7 +1465,7 @@
           const rb = instr >>> 3 & 7;
           const offset = (instr >>> 6 & 31) << (byte ? 0 : 2);
           const address = U32(this.r[rb] + offset);
-          if (load) this.r[rd] = byte ? this.memory.read8(address) : this.memory.read32(address);
+          if (load) this.r[rd] = byte ? this.memory.read8(address) : this.readWord(address);
           else if (byte) this.memory.write8(address, this.r[rd]);
           else this.memory.write32(address, this.r[rd]);
           this.cycles += 2;

@@ -158,6 +158,17 @@ test('LDR literal Thumb usa PC+4 alinhado em quatro bytes', () => {
   const cpu = new Arm7tdmi(new GbaMemory(rom)); cpu.thumb = true; cpu.step(); assert.equal(cpu.r[0], 0x12345678);
 });
 
+test('LDR ARM e Thumb rotacionam words desalinhadas como o ARM7TDMI', () => {
+  const armMemory = new GbaMemory(romWithWords([0xe5901000])); const armCpu = new Arm7tdmi(armMemory);
+  armMemory.write32(0x02000000, 0x44332211); armCpu.r[0] = 0x02000001; armCpu.step();
+  assert.equal(armCpu.r[1], 0x11443322);
+
+  const thumbRom = new Uint8Array(0x40); thumbRom[0] = 0x03; thumbRom[1] = 0x68; // LDR r3, [r0]
+  const thumbMemory = new GbaMemory(thumbRom); const thumbCpu = new Arm7tdmi(thumbMemory); thumbCpu.thumb = true;
+  thumbMemory.write32(0x02000000, 0x44332211); thumbCpu.r[0] = 0x02000002; thumbCpu.step();
+  assert.equal(thumbCpu.r[3], 0x22114433);
+});
+
 test('BIOS SoftReset retorna ao início da ROM sem zerar ciclos', () => {
   const memory = new GbaMemory(new Uint8Array(0x40)); const cpu = new Arm7tdmi(memory); cpu.cycles = 100; cpu.thumb = true; cpu.r[15] = 0x08123456; cpu.handleSwi(0x00);
   assert.equal(cpu.r[15], 0x08000000); assert.equal(cpu.thumb, false); assert.equal(cpu.cycles, 104);
@@ -309,6 +320,7 @@ test('Flash 1M identifica, grava e troca bancos de 64 KiB', () => {
   const command = (value) => { memory.write8(0x0e005555, 0xaa); memory.write8(0x0e002aaa, 0x55); memory.write8(0x0e005555, value); };
   command(0x90); assert.equal(memory.read8(0x0e000000), 0x62); assert.equal(memory.read8(0x0e000001), 0x13); memory.write8(0x0e000000, 0xf0);
   command(0xa0); memory.write8(0x0e000123, 0x5a); assert.equal(memory.read8(0x0e000123), 0x5a);
+  command(0xa0); memory.write8(0x0e000124, 0xf0); assert.equal(memory.read8(0x0e000124), 0xf0);
   command(0xb0); memory.write8(0x0e000000, 1); assert.equal(memory.read8(0x0e000123), 0xff);
   command(0xa0); memory.write8(0x0e000123, 0xa5); assert.equal(memory.read8(0x0e000123), 0xa5);
   command(0xb0); memory.write8(0x0e000000, 0); assert.equal(memory.read8(0x0e000123), 0x5a); assert.equal(memory.getSave().length, 0x20000);
